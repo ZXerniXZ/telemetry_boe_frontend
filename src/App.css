@@ -47,3 +47,42 @@
 .measure-cursor .leaflet-container {
   cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M2 28 L30 4 M6 24 L10 20 M14 16 L18 12 M22 8 L26 4" stroke="black" stroke-width="2" fill="none"/><rect x="2" y="26" width="4" height="4" fill="black"/></svg>') 0 32, crosshair !important;
 }
+
+.selected-buoy-halo {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(144,202,249,0.35) 0%, rgba(25,118,210,0.18) 60%, rgba(25,118,210,0.08) 100%);
+  border: 3px solid #1976d2;
+  box-shadow: 0 0 32px 8px #90caf9;
+  animation: halo-appear 0.35s cubic-bezier(0.4,0,0.2,1), halo-breath 2.2s 0.35s infinite alternate cubic-bezier(0.4,0,0.2,1);
+  transform: scale(0.2);
+  position: absolute;
+  pointer-events: none;
+  z-index: 1000;
+}
+@keyframes halo-appear {
+  0% { transform: scale(0.2); opacity: 0; }
+  80% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes halo-breath {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.08); opacity: 0.82; }
+}
+
+.buoy-halo-appear {
+  animation: halo-appear-css 0.6s cubic-bezier(0.4,0,0.2,1);
+}
+.buoy-halo-breath {
+  animation: halo-breath-css 3.5s 0.6s infinite alternate cubic-bezier(0.4,0,0.2,1);
+}
+@keyframes halo-appear-css {
+  0% { transform: scale(0.2); opacity: 0; }
+  80% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes halo-breath-css {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.08); opacity: 0.82; }
+}

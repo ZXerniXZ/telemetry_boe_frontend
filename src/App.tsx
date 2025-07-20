@@ -258,6 +258,8 @@ function BoaDetailPage({ vehicle, onBack, onRemove }: { vehicle: Vehicle; onBack
   const rollDeg = roll !== null ? (roll * 180 / Math.PI).toFixed(1) : null;
   // Ricava ip e port dall'id (es: 10_8_0_53_14550)
   const { ip, port } = parseIpPort(vehicle.id);
+  // Numero satelliti visibili da GPS_RAW_INT
+  const satellites = vehicle.GPS_RAW_INT?.satellites_visible ?? null;
   return (
     <Box sx={{ p: 3, maxWidth: 500, mx: 'auto' }}>
       <Box sx={{ mb: 2 }}>
@@ -278,7 +280,8 @@ function BoaDetailPage({ vehicle, onBack, onRemove }: { vehicle: Vehicle; onBack
         <strong>Stato:</strong> {mode !== null ? String(mode) : 'N/A'}<br />
         <strong>Batteria:</strong> {voltage !== null ? voltage + ' V' : 'N/A'} ({batteryPct !== null ? batteryPct + '%' : 'N/A'})<br />
         <strong>Pitch:</strong> {pitch !== null ? `${pitch.toFixed(3)} rad (${pitchDeg}°)` : 'N/A'}<br />
-        <strong>Roll:</strong> {roll !== null ? `${roll.toFixed(3)} rad (${rollDeg}°)` : 'N/A'}
+        <strong>Roll:</strong> {roll !== null ? `${roll.toFixed(3)} rad (${rollDeg}°)` : 'N/A'}<br />
+        <strong>Satelliti visibili:</strong> {satellites !== null ? satellites : 'N/A'}
       </Box>
       <Button variant="contained" color="error" onClick={() => onRemove(ip, port)} sx={{ mt: 2 }}>Rimuovi boa</Button>
     </Box>
