@@ -2,7 +2,7 @@ import MapView from './components/MapView';
 import type { Vehicle } from './components/MapView';
 import { MqttProvider } from './mqtt/MqttProvider';
 import { useTelemetry } from './mqtt/useTelemetry';
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { AppBar, Toolbar, IconButton, Typography, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Box, Badge, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, Button, Accordion, AccordionSummary, AccordionDetails, Snackbar, Alert } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
@@ -12,10 +12,21 @@ import L from 'leaflet';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { vehicleIconOnline, vehicleIconOffline } from './config';
 import { parseIpPort } from './utils';
+import SignalWifiStatusbar4BarRoundedIcon from '@mui/icons-material/SignalWifiStatusbar4BarRounded';
+import GpsFixedRoundedIcon from '@mui/icons-material/GpsFixedRounded';
+import BarChartRoundedIcon from '@mui/icons-material/BarChartRounded';
+import CellTowerRoundedIcon from '@mui/icons-material/CellTowerRounded';
+import SatelliteAltRoundedIcon from '@mui/icons-material/SatelliteAltRounded';
+import SignalCellular0BarRoundedIcon from '@mui/icons-material/SignalCellular0BarRounded';
+import SignalCellular1BarRoundedIcon from '@mui/icons-material/SignalCellular1BarRounded';
+import SignalCellular2BarRoundedIcon from '@mui/icons-material/SignalCellular2BarRounded';
+import SignalCellular3BarRoundedIcon from '@mui/icons-material/SignalCellular3BarRounded';
+import SignalCellular4BarRoundedIcon from '@mui/icons-material/SignalCellular4BarRounded';
+import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 
 const drawerWidth = 220;
 
-function TelemetryMap({ vehicles }: { vehicles: Vehicle[] }) {
+function TelemetryMap({ vehicles, selectedVehicleId, setSelectedVehicleId }: { vehicles: Vehicle[], selectedVehicleId: string | null, setSelectedVehicleId: (id: string | null) => void }) {
   // Mostra la mappa solo se c'è almeno una boa connessa
   if (vehicles.length === 0) {
     return <div style={{textAlign: 'center', marginTop: 40, color: '#888'}}>In attesa di coordinate...</div>;
@@ -25,14 +36,38 @@ function TelemetryMap({ vehicles }: { vehicles: Vehicle[] }) {
       <MapView
         vehicles={vehicles}
         initialZoom={16}
+        selectedVehicleId={selectedVehicleId}
+        setSelectedVehicleId={setSelectedVehicleId}
       />
     </Box>
   );
 }
 
-function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBoa, connectingIps, connectError, onCloseError }: { vehicles: Vehicle[]; onSelect: (id: string) => void; scannedIps: string[]; onScan: () => void; scanning: boolean; onConnectBoa: (ip: string) => void; connectingIps: Set<string>; connectError: string | null; onCloseError: () => void }) {
+function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBoa, connectingIps, connectError, onCloseError, autoRetry, setAutoRetry, disconnectedSince }: { vehicles: Vehicle[]; onSelect: (id: string) => void; scannedIps: string[]; onScan: () => void; scanning: boolean; onConnectBoa: (ip: string) => void; connectingIps: Set<string>; connectError: string | null; onCloseError: () => void; autoRetry: boolean; setAutoRetry: (v: boolean) => void; disconnectedSince: { [id: string]: number } }) {
   const [openConnected, setOpenConnected] = useState(true);
   const [openScanned, setOpenScanned] = useState(true);
+  // Funzione per formattare il tempo trascorso
+  function formatDuration(ms: number) {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    const h = Math.floor(m / 60);
+    if (h > 0) return `${h}h ${m % 60}m ${s % 60}s`;
+    if (m > 0) return `${m}m ${s % 60}s`;
+    return `${s}s`;
+  }
+  const scanRef = useRef(onScan);
+  useEffect(() => { scanRef.current = onScan; }, [onScan]);
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (autoRetry) {
+      interval = setInterval(() => {
+        scanRef.current();
+      }, 5000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [autoRetry]);
   return (
     <Box sx={{ p: 3 }}>
       <Accordion expanded={openConnected} onChange={() => setOpenConnected(o => !o)}>
@@ -91,6 +126,23 @@ function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBo
                         cursor: 'pointer'
                       }}
                     />
+                    {/* Scritta rossa disconnesso da ... */}
+                    {!isOnline && disconnectedSince[v.id] && (
+                      <Box sx={{
+                        position: 'absolute',
+                        bottom: 8,
+                        left: 0,
+                        right: 0,
+                        textAlign: 'center',
+                        color: 'red',
+                        fontWeight: 700,
+                        fontSize: 16,
+                        textShadow: '0 1px 4px #fff',
+                        zIndex: 2,
+                      }}>
+                        Disconnesso da: {formatDuration(Date.now() - disconnectedSince[v.id])}
+                      </Box>
+                    )}
                   </Paper>
                 </Box>
               );
@@ -105,6 +157,11 @@ function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBo
         <AccordionDetails>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
             <Button variant="contained" onClick={onScan} disabled={scanning}>{scanning ? 'Scansione...' : 'Scan'}</Button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={autoRetry} onChange={e => setAutoRetry(e.target.checked)} />
+              Auto retry
+              {autoRetry && <span style={{ color: '#1976d2', fontWeight: 600, marginLeft: 6 }}>(attivo)</span>}
+            </label>
           </Box>
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
             {scannedIps.length === 0 && <Typography variant="body2" color="text.secondary">Nessuna boa individuata</Typography>}
@@ -178,10 +235,27 @@ function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBo
   );
 }
 
-function TopBar({ boaCount, onMenuClick }: { boaCount: number; onMenuClick: () => void }) {
+function TopBar({ boaCount, onMenuClick, selectedVehicle }: { boaCount: number; onMenuClick: () => void; selectedVehicle: Vehicle | null }) {
   const now = new Date();
   const timeStr = now.toLocaleTimeString();
   const connected = boaCount > 0;
+  // Calcolo link quality
+  let linkQuality: number | null = null;
+  if (selectedVehicle && selectedVehicle.SYS_STATUS && typeof selectedVehicle.SYS_STATUS.drop_rate_comm === 'number') {
+    linkQuality = 100 - selectedVehicle.SYS_STATUS.drop_rate_comm / 100.0;
+  }
+  let SignalIcon = SignalCellular0BarRoundedIcon;
+  if (linkQuality !== null) {
+    if (linkQuality >= 75) SignalIcon = SignalCellular4BarRoundedIcon;
+    else if (linkQuality >= 50) SignalIcon = SignalCellular3BarRoundedIcon;
+    else if (linkQuality >= 25) SignalIcon = SignalCellular2BarRoundedIcon;
+    else if (linkQuality >= 1) SignalIcon = SignalCellular1BarRoundedIcon;
+    else SignalIcon = SignalCellular0BarRoundedIcon;
+  }
+  // Determina se la boa è offline
+  const isOffline = selectedVehicle && selectedVehicle.isonline !== true;
+  const isNoBoa = !selectedVehicle || isOffline;
+  const iconStyle = isNoBoa ? { color: '#bbb', opacity: 0.5, filter: 'grayscale(1) brightness(1.2)' } : {};
   return (
     <AppBar position="fixed" color="default" elevation={1} sx={{ bgcolor: 'white', color: 'black', zIndex: 1201 }}>
       <Toolbar sx={{ justifyContent: 'space-between' }}>
@@ -191,6 +265,43 @@ function TopBar({ boaCount, onMenuClick }: { boaCount: number; onMenuClick: () =
           </IconButton>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {/* Icone stato connessione e satelliti */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SignalIcon
+              fontSize="medium"
+              sx={{ ...iconStyle }}
+            />
+            <Box sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+              <SatelliteAltRoundedIcon
+                fontSize="medium"
+                sx={{ ...iconStyle }}
+              />
+              {/* Mostra badge satelliti solo se c'è una boa online selezionata */}
+              {selectedVehicle && selectedVehicle.isonline === true && typeof selectedVehicle.GPS_RAW_INT?.satellites_visible === 'number' && (
+                <Box sx={{
+                  position: 'absolute',
+                  top: -6,
+                  right: -10,
+                  bgcolor: '#1976d2',
+                  color: 'white',
+                  borderRadius: '50%',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  px: 0.7,
+                  py: 0.1,
+                  minWidth: 18,
+                  textAlign: 'center',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+                }}>
+                  {selectedVehicle.GPS_RAW_INT.satellites_visible}
+                </Box>
+              )}
+            </Box>
+            {/* Simbolo attenzione rosso se offline */}
+            {selectedVehicle && selectedVehicle.isonline !== true && (
+              <WarningAmberRoundedIcon sx={{ color: 'red', fontSize: 28, ml: 1 }} />
+            )}
+          </Box>
           <Typography variant="h6" sx={{ fontWeight: 500, flex: 1, textAlign: 'center', minWidth: 120 }}>
             {timeStr}
           </Typography>
@@ -292,11 +403,22 @@ function AppContent() {
   const { telemetry } = useTelemetry();
   const [menuOpen, setMenuOpen] = useState(false);
   const [page, setPage] = useState<'mappa' | 'boe' | 'boa-detail'>('mappa');
-  const [selectedBoa, setSelectedBoa] = useState<string | null>(null);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [scannedIps, setScannedIps] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connectingIps, setConnectingIps] = useState<Set<string>>(new Set());
   const [connectError, setConnectError] = useState<string | null>(null);
+  // Memoizza boe aggiunte dall'utente
+  const [userBoas, setUserBoas] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('userBoas') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem('userBoas', JSON.stringify(userBoas));
+  }, [userBoas]);
   // Memoizza vehicles
   const vehicles: Vehicle[] = useMemo(() => Object.entries(telemetry)
     .map(([deviceId, types]) => {
@@ -306,7 +428,6 @@ function AppContent() {
       const lon = posMsg.data.lon / 1e7;
       if (isNaN(lat) || isNaN(lon)) return null;
       const isonline = (types['isonline'] as any) === true;
-      if (!isonline) return null;
       return {
         id: deviceId,
         lat,
@@ -315,13 +436,14 @@ function AppContent() {
         isonline,
       };
     })
-    .filter(Boolean) as Vehicle[], [telemetry]);
+    .filter((v): v is Vehicle => Boolean(v) && typeof v === 'object' && 'id' in v && 'lat' in v && 'lon' in v && 'isonline' in v)
+    .filter(v => userBoas.includes(v.id)) as Vehicle[], [telemetry, userBoas]);
   // Memoizza connectedIps
   const connectedIps = useMemo(() => vehicles.map(v => v.id.split('_').slice(0, 4).join('.')), [vehicles]);
   // Memoizza scannedIpsFiltered
   const scannedIpsFiltered = useMemo(() => scannedIps.filter(ip => !connectedIps.includes(ip)), [scannedIps, connectedIps]);
   // Memoizza selectedVehicle
-  const selectedVehicle = useMemo(() => vehicles.find(v => v.id === selectedBoa) || null, [vehicles, selectedBoa]);
+  const selectedVehicle = useMemo(() => vehicles.find(v => v.id === selectedVehicleId) || null, [vehicles, selectedVehicleId]);
   // Memoizza handleScan
   const handleScan = useCallback(async () => {
     setScanning(true);
@@ -361,6 +483,9 @@ function AppContent() {
         setConnectingIps(prev => { const s = new Set(prev); s.delete(ip); return s; });
         return;
       }
+      // Ricava id come fa vehicles
+      const id = `${ip.replace(/\./g, '_')}_${port}`;
+      setUserBoas(prev => prev.includes(id) ? prev : [...prev, id]);
       setScannedIps(prev => prev.filter(item => item !== ip));
       setConnectingIps(prev => { const s = new Set(prev); s.delete(ip); return s; });
     } catch (e: any) {
@@ -370,25 +495,85 @@ function AppContent() {
   }, []);
   // Memoizza handleRemoveBoa
   const handleRemoveBoa = useCallback(async (ip: string, port: number) => {
+    const id = `${ip.replace(/\./g, '_')}_${port}`;
     try {
       const url = `http://localhost:8001/rimuoviboa?ip=${encodeURIComponent(ip)}&port=${encodeURIComponent(port)}`;
       const res = await fetch(url, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Errore rimozione boa');
+      // Anche se fallisce, rimuovi comunque la boa dalla lista locale
       setPage('boe');
-      setSelectedBoa(null);
+      setSelectedVehicleId(null);
+      setUserBoas(prev => prev.filter(bid => bid !== id));
+      if (!res.ok) throw new Error('Errore rimozione boa');
     } catch (e) {
+      // Rimuovi comunque la boa dalla lista locale anche in caso di errore
+      setPage('boe');
+      setSelectedVehicleId(null);
+      setUserBoas(prev => prev.filter(bid => bid !== id));
       // Opzionale: feedback errore
     }
   }, []);
   // Memoizza handleCloseConnectError
   const handleCloseConnectError = useCallback(() => setConnectError(null), []);
+  const [autoRetry, setAutoRetry] = useState(false);
+
+  // Stato per il tempo di disconnessione di ogni boa (persistente tra le pagine)
+  const [disconnectedSince, setDisconnectedSince] = useState<{ [id: string]: number }>({});
+  // Aggiorna il tempo di disconnessione quando una boa va offline
+  useEffect(() => {
+    const now = Date.now();
+    setDisconnectedSince(prev => {
+      const updated = { ...prev };
+      vehicles.forEach(v => {
+        if (v.isonline === false || v.isonline === undefined) {
+          if (!updated[v.id]) updated[v.id] = now;
+        } else {
+          if (updated[v.id]) delete updated[v.id];
+        }
+      });
+      return updated;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicles.map(v => v.id + ':' + v.isonline).join(',')]);
+  // Forza il re-render ogni secondo per aggiornare il timer
+  const [, forceRerender] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => forceRerender(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const onlineCount = vehicles.filter(v => v.isonline).length;
 
+  // Centralizzo la logica di scan per triggerare sempre l'animazione
+  const scanWithAnimation = useCallback(async () => {
+    setScanning(true);
+    try {
+      const res = await fetch('http://localhost:8001/scan');
+      if (!res.ok) throw new Error('Errore scansione');
+      const data = await res.json();
+      let found: string[] = [];
+      if (Array.isArray(data)) {
+        found = data;
+      } else if (Array.isArray(data.ips)) {
+        found = data.ips;
+      } else if (Array.isArray(data.found)) {
+        found = data.found;
+      }
+      setScannedIps(found.filter(ip => !connectedIps.includes(ip)));
+    } catch (e) {
+      setScannedIps([]);
+    } finally {
+      setScanning(false);
+    }
+  }, [connectedIps]);
+  // Memoizza handleScan per click manuale
+  const handleScanManual = useCallback(() => {
+    scanWithAnimation();
+  }, [scanWithAnimation]);
+
   return (
     <Box sx={{ height: '100vh', bgcolor: 'white' }}>
-      <TopBar boaCount={onlineCount} onMenuClick={() => setMenuOpen((open) => !open)} />
-      <SideMenu open={menuOpen} onClose={() => setMenuOpen(false)} currentPage={page} setPage={p => { setPage(p as 'mappa' | 'boe'); setSelectedBoa(null); }} />
+      <TopBar boaCount={onlineCount} onMenuClick={() => setMenuOpen((open) => !open)} selectedVehicle={selectedVehicle} />
+      <SideMenu open={menuOpen} onClose={() => setMenuOpen(false)} currentPage={page} setPage={p => { setPage(p as 'mappa' | 'boe'); setSelectedVehicleId(null); }} />
       <Box
         sx={{
           pt: 8,
@@ -399,8 +584,8 @@ function AppContent() {
           marginLeft: menuOpen ? `${drawerWidth}px` : 0,
         }}
       >
-        {page === 'mappa' && <TelemetryMap vehicles={vehicles} />}
-        {page === 'boe' && <BoePage vehicles={vehicles} onSelect={id => { setSelectedBoa(id); setPage('boa-detail'); }} scannedIps={scannedIpsFiltered} onScan={handleScan} scanning={scanning} onConnectBoa={handleConnectBoa} connectingIps={connectingIps} connectError={connectError} onCloseError={handleCloseConnectError} />}
+        {page === 'mappa' && <TelemetryMap vehicles={vehicles} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} />}
+        {page === 'boe' && <BoePage vehicles={vehicles} onSelect={id => { setSelectedVehicleId(id); setPage('boa-detail'); }} scannedIps={scannedIpsFiltered} onScan={handleScan} scanning={scanning} onConnectBoa={handleConnectBoa} connectingIps={connectingIps} connectError={connectError} onCloseError={handleCloseConnectError} autoRetry={autoRetry} setAutoRetry={setAutoRetry} disconnectedSince={disconnectedSince} />}
         {page === 'boa-detail' && selectedVehicle && <BoaDetailPage vehicle={selectedVehicle} onBack={() => setPage('boe')} onRemove={handleRemoveBoa} />}
       </Box>
     </Box>

@@ -21,15 +21,20 @@ import ClickAwayListener from '@mui/material/ClickAwayListener';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import { useMapEvent } from 'react-leaflet';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+import SignalWifiStatusbar4BarRoundedIcon from '@mui/icons-material/SignalWifiStatusbar4BarRounded';
+import GpsFixedRoundedIcon from '@mui/icons-material/GpsFixedRounded';
+import BarChartRoundedIcon from '@mui/icons-material/BarChartRounded';
+import CellTowerRoundedIcon from '@mui/icons-material/CellTowerRounded';
+import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 
 // Icona personalizzata per le boe, con rotazione dinamica
-function getRotatedIcon(heading: number) {
+function getRotatedIcon(heading: number, isOnline: boolean) {
   return L.divIcon({
     className: '',
     iconSize: [40, 40],
     iconAnchor: [20, 40],
     popupAnchor: [0, -40],
-    html: `<img src="/boe/boeIconDefault.png" style="width:40px;height:40px;transform:rotate(${heading}deg);display:block;pointer-events:none;" />`,
+    html: `<img src="/boe/boeIconDefault.png" style="width:40px;height:40px;transform:rotate(${heading}deg);display:block;pointer-events:none;filter:${isOnline ? 'none' : 'grayscale(1) brightness(0.7)'};opacity:${isOnline ? 1 : 0.7};" />`,
   });
 }
 
@@ -37,6 +42,7 @@ export interface Vehicle {
   id: string;
   lat: number;
   lon: number;
+  isonline?: boolean;
   [key: string]: any; // altri dati associati
 }
 
@@ -45,6 +51,8 @@ interface MapViewProps {
   centerOn?: [number, number];
   initialZoom?: number;
   actions?: React.ReactNode; // elementi opzionali da mostrare a sinistra del menu stile mappa
+  selectedVehicleId: string | null;
+  setSelectedVehicleId: (id: string | null) => void;
 }
 
 function RecenterOnChange({ center }: { center: [number, number] }) {
@@ -108,7 +116,167 @@ function SelectedHaloMarker({ lat, lon, icon }: { lat: number, lon: number, icon
   );
 }
 
-const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => {
+// Nuovo componente per marker veicolo
+function VehicleMarker({
+  v,
+  isSelected,
+  vaiaActive,
+  vaiaTarget,
+  handleMarkerClick,
+  selectedVehicleId
+}: {
+  v: Vehicle,
+  isSelected: boolean,
+  vaiaActive: { [id: string]: boolean },
+  vaiaTarget: { [id: string]: { lat: number, lon: number } | null },
+  handleMarkerClick: (id: string) => void,
+  selectedVehicleId: string | null
+}) {
+  // Ricava heading da GLOBAL_POSITION_INT.hdg se presente
+  let heading = 0;
+  if (v.GLOBAL_POSITION_INT && typeof v.GLOBAL_POSITION_INT.hdg === 'number') {
+    heading = Math.floor(v.GLOBAL_POSITION_INT.hdg / 100);
+  }
+  const isOnline = v.isonline === true;
+  // Linea verde e marker destinazione se vaia attivo per questa boa
+  const tgt = vaiaTarget[v.id];
+  const vaiaTgt = vaiaActive[v.id] && tgt && typeof tgt.lat === 'number' && typeof tgt.lon === 'number';
+  // Icona evidenziata custom SVG animata via CSS
+  const [haloAppear, setHaloAppear] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (isSelected) {
+      setHaloAppear('buoy-halo-appear');
+      const t = setTimeout(() => setHaloAppear(null), 600);
+      return () => clearTimeout(t);
+    }
+  }, [isSelected]);
+  const selectedHaloIcon = L.divIcon({
+    className: '',
+    iconSize: [70, 70],
+    iconAnchor: [34, 50],
+    html: `
+      <svg width='70' height='70' style='overflow:visible;'>
+        <circle cx='35' cy='35' r='28' fill='none' stroke='#1976d2' stroke-width='5'/>
+        <circle cx='35' cy='35' r='32' fill='none' stroke='#90caf9' stroke-width='7' stroke-opacity='0.7'/>
+      </svg>`
+  });
+  // Icona warning per marker offline
+  const warningIcon = L.divIcon({
+    className: '',
+    iconSize: [32, 32],
+    iconAnchor: [16, 32],
+    html: `<div style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;">
+      <svg width='32' height='32' viewBox='0 0 24 24' fill='red'><path d='M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z'/></svg>
+    </div>`
+  });
+  return (
+    <React.Fragment key={v.id}>
+      {/* Marker warning sopra se offline */}
+      {!isOnline && (
+        <Marker
+          position={[v.lat, v.lon]}
+          icon={warningIcon}
+          interactive={false}
+          zIndexOffset={1000}
+        />
+      )}
+      {/* Cerchio animato sopra la mappa per la boa selezionata */}
+      {isSelected && (
+        <SelectedHaloMarker lat={v.lat} lon={v.lon} icon={selectedHaloIcon} />
+      )}
+      <Marker key={v.id} position={[v.lat, v.lon]} icon={getRotatedIcon(heading, isOnline)}
+        eventHandlers={{ click: () => handleMarkerClick(v.id) }}
+      >
+        {/* Simbolo attenzione rosso se offline */}
+        {!isOnline && (
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -120%)',
+              zIndex: 30,
+              pointerEvents: 'none',
+              background: 'rgba(255,255,255,0.85)',
+              borderRadius: '50%',
+              padding: 2,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <WarningAmberRoundedIcon sx={{ color: 'red', fontSize: 32 }} />
+          </div>
+        )}
+        {/* Evidenzia marker selezionato con un bordo/alone */}
+        {isSelected && (
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 56,
+              height: 56,
+              borderRadius: '50%',
+              border: '3px solid #1976d2',
+              boxShadow: '0 0 32px 8px #90caf9',
+              background: 'rgba(255,255,255,0.5)',
+              zIndex: 20,
+              pointerEvents: 'none',
+            }}
+          />
+        )}
+        {/* Overlay grigio per boe offline */}
+        {/* (rimosso: ora il filtro è direttamente sull'icona) */}
+        <Popup>
+          <div>
+            <strong>IP:</strong> {v.id.split('_').slice(0, 4).join('.')}
+          </div>
+        </Popup>
+        {/* Debug: mostra la posizione accanto al marker */}
+        <div
+          style={{
+            position: 'absolute',
+            left: '30px',
+            top: '-10px',
+            background: 'rgba(255,255,255,0.8)',
+            padding: '2px 4px',
+            borderRadius: '4px',
+            fontSize: '12px',
+            pointerEvents: 'none',
+            transform: 'translate(-50%, -100%)',
+            fontWeight: selectedVehicleId === v.id ? 700 : 400,
+            color: selectedVehicleId === v.id ? '#1976d2' : '#333',
+            border: selectedVehicleId === v.id ? '2px solid #1976d2' : 'none',
+          }}
+        >
+          {v.lat.toFixed(5)}, {v.lon.toFixed(5)}
+        </div>
+      </Marker>
+      {/* Linea verde e marker destinazione se vaia attivo */}
+      {vaiaTgt && (
+        <>
+          <Polyline
+            positions={[[v.lat, v.lon], [tgt.lat, tgt.lon]]}
+            pathOptions={{ color: 'green', weight: 5, dashArray: '6 8', opacity: 0.9 }}
+          />
+          <Marker
+            position={[tgt.lat, tgt.lon]}
+            icon={L.divIcon({
+              className: '',
+              html: `<div style=\"display:inline-flex;align-items:center;justify-content:center;background:rgba(0,200,0,0.95);border-radius:999px;padding:6px 1em;font-size:15px;color:white;border:2.5px solid green;box-shadow:0 2px 12px rgba(0,0,0,0.15);font-weight:900;white-space:nowrap;box-sizing:border-box;\">Arrivo</div>`
+            })}
+            interactive={false}
+          />
+        </>
+      )}
+    </React.Fragment>
+  );
+}
+
+const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, setSelectedVehicleId }: MapViewProps) => {
   // Centro della mappa: se c'è centerOn, altrimenti primo veicolo, altrimenti mondo
   const defaultCenter: [number, number] = (vehicles.length > 0 ? [vehicles[0].lat, vehicles[0].lon] : [0, 0]);
   const defaultZoom = typeof initialZoom === 'number' ? initialZoom : (vehicles.length > 0 ? 8 : 2);
@@ -134,10 +302,6 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
   const [gotoError, setGotoError] = useState<string | null>(null);
   const [gotoSuccess, setGotoSuccess] = useState<string | null>(null);
 
-  // Stato per selezione boa
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) || null;
-
   // Stato per ogni boa: vaia attivo e target
   const [vaiaActive, setVaiaActive] = useState<{[id: string]: boolean}>({});
   const [vaiaTarget, setVaiaTarget] = useState<{[id: string]: {lat: number, lon: number} | null}>({});
@@ -154,6 +318,9 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
 
   // Ref per accedere alla mappa leaflet
   const mapRef = useRef<L.Map | null>(null);
+
+  // selectedVehicle globale per tutto il componente
+  const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) || null;
 
   // useEffect per aggiungere handler click alla mappa
   useEffect(() => {
@@ -179,6 +346,20 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
       map.flyTo(centroid, map.getZoom());
     }
   }, [vehicles]);
+
+  // DEBUG: log cambi di stato principali
+  useEffect(() => {
+    console.log('[DEBUG GOTO] gotoMode:', gotoMode);
+  }, [gotoMode]);
+  useEffect(() => {
+    console.log('[DEBUG GOTO] gotoTarget:', gotoTarget);
+  }, [gotoTarget]);
+  useEffect(() => {
+    console.log('[DEBUG GOTO] gotoSuccess:', gotoSuccess);
+  }, [gotoSuccess]);
+  useEffect(() => {
+    console.log('[DEBUG GOTO] gotoError:', gotoError);
+  }, [gotoError]);
 
   // Gestione click sulla mappa in modalità misura
   function handleMapClick(e: L.LeafletMouseEvent) {
@@ -256,29 +437,39 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
   // Handler click sulla mappa in modalità GOTO
   function handleGotoMapClick(e: L.LeafletMouseEvent) {
     if (!gotoMode) return;
-    if (!gotoSuccess) setGotoTarget({ lat: e.latlng.lat, lon: e.latlng.lng });
+    if (!gotoSuccess) {
+      console.log('[DEBUG GOTO] handleGotoMapClick: selezionata posizione', e.latlng);
+      setGotoTarget({ lat: e.latlng.lat, lon: e.latlng.lng });
+    }
   }
 
   // Handler click marker boa
   function handleMarkerClick(vehicleId: string) {
+    console.log('[DEBUG GOTO] handleMarkerClick: selezionata boa', vehicleId);
     setSelectedVehicleId(vehicleId);
   }
 
   // Handler click sulla mappa (fuori marker)
   function handleMapBackgroundClick(e: L.LeafletMouseEvent) {
+    // Se in gotoMode, gestisci solo la selezione destinazione
+    if (gotoMode) {
+      console.log('[DEBUG GOTO] handleMapBackgroundClick: click su mappa in gotoMode');
+      handleGotoMapClick(e);
+      // NON azzerare selectedVehicleId!
+      return;
+    }
     setSelectedVehicleId(null);
-    // Se in gotoMode, gestisci anche la selezione destinazione
-    if (gotoMode) handleGotoMapClick(e);
   }
 
   // Funzione per inviare comando vai a
   async function handleSendGoto() {
-    if (!gotoTarget || !selectedVehicle) return;
+    if (!selectedVehicle || !gotoTarget) return;
     setGotoTarget(gotoTarget); // blocca la selezione punto dopo invio
     setGotoLoading(true);
     setGotoError(null);
     setGotoSuccess(null);
     const { ip, port } = parseIpPort(selectedVehicle.id);
+    console.log('[DEBUG GOTO] handleSendGoto: invio comando', { ip, port, gotoTarget });
     try {
       const res = await fetch('http://localhost:8001/vaia', {
         method: 'POST',
@@ -296,9 +487,10 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
       setGotoSuccess('Comando inviato!');
       setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: true }));
       setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: { lat: gotoTarget.lat, lon: gotoTarget.lon } }));
-      // Non chiudere il pannello, mostra solo STOP
+      console.log('[DEBUG GOTO] handleSendGoto: successo');
     } catch (e: any) {
       setGotoError(e?.message || 'Errore invio comando');
+      console.log('[DEBUG GOTO] handleSendGoto: errore', e);
     } finally {
       setGotoLoading(false);
     }
@@ -307,7 +499,6 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
   // Funzione per inviare stop_vaia
   async function handleStopGoto() {
     if (!selectedVehicle) return;
-    // Chiudi subito tutte le schermate Vai a
     setGotoMode(false);
     setGotoTarget(null);
     setGotoSuccess(null);
@@ -316,6 +507,7 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
     setGotoError(null);
     setGotoSuccess(null);
     const { ip, port } = parseIpPort(selectedVehicle.id);
+    console.log('[DEBUG GOTO] handleStopGoto: invio stop', { ip, port });
     try {
       const res = await fetch('http://localhost:8001/stop_vaia', {
         method: 'POST',
@@ -326,8 +518,10 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
       if (!res.ok) throw new Error(data.detail || data.message || 'Errore stop');
       setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: false }));
       setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: null }));
+      console.log('[DEBUG GOTO] handleStopGoto: successo');
     } catch (e: any) {
       setGotoError(e?.message || 'Errore stop');
+      console.log('[DEBUG GOTO] handleStopGoto: errore', e);
     } finally {
       setGotoLoading(false);
     }
@@ -335,7 +529,7 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
 
   // Funzione per inviare comando cambia_stato
   async function handleSendManual() {
-    if (!selectedVehicle || !manualState) return;
+    if (!selectedVehicle) return;
     setManualLoading(true);
     setManualError(null);
     setManualSuccess(null);
@@ -362,6 +556,7 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
 
   // Quando cambio boa selezionata, resetta schermata Vai a se necessario
   useEffect(() => {
+    console.log('[DEBUG GOTO] useEffect: cambio selectedVehicleId', selectedVehicleId);
     setGotoMode(false);
     setGotoTarget(null);
     setGotoSuccess(null);
@@ -509,109 +704,17 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
             />
           </React.Fragment>
         ))}
-        {vehicles.map((v) => {
-          // Ricava heading da GLOBAL_POSITION_INT.hdg se presente
-          let heading = 0;
-          if (v.GLOBAL_POSITION_INT && typeof v.GLOBAL_POSITION_INT.hdg === 'number') {
-            heading = Math.floor(v.GLOBAL_POSITION_INT.hdg / 100);
-          }
-          // Linea verde e marker destinazione se vaia attivo per questa boa
-          const tgt = vaiaTarget[v.id];
-          const vaiaTgt = vaiaActive[v.id] && tgt && typeof tgt.lat === 'number' && typeof tgt.lon === 'number';
-          const isSelected = selectedVehicleId === v.id;
-          // Icona evidenziata custom SVG animata via CSS
-          const [haloAppear, setHaloAppear] = useState<string | null>(null);
-          useEffect(() => {
-            if (isSelected) {
-              setHaloAppear('buoy-halo-appear');
-              const t = setTimeout(() => setHaloAppear(null), 600);
-              return () => clearTimeout(t);
-            }
-          }, [isSelected]);
-          const haloClass = `buoy-halo-breath${haloAppear ? ' ' + haloAppear : ''}`;
-          const selectedHaloIcon = L.divIcon({
-            className: '',
-            iconSize: [70, 70],
-            iconAnchor: [34, 50],
-            html: `
-              <svg width='70' height='70' style='overflow:visible;'>
-                <circle cx='35' cy='35' r='28' fill='none' stroke='#1976d2' stroke-width='5'/>
-                <circle cx='35' cy='35' r='32' fill='none' stroke='#90caf9' stroke-width='7' stroke-opacity='0.7'/>
-              </svg>`
-          });
-          return (
-            <React.Fragment key={v.id}>
-              {/* Cerchio animato sopra la mappa per la boa selezionata */}
-              {isSelected && (
-                <SelectedHaloMarker lat={v.lat} lon={v.lon} icon={selectedHaloIcon} />
-              )}
-              <Marker key={v.id} position={[v.lat, v.lon]} icon={getRotatedIcon(heading)}
-                eventHandlers={{ click: () => handleMarkerClick(v.id) }}
-              >
-                {/* Evidenzia marker selezionato con un bordo/alone */}
-                {isSelected && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: '50%',
-                      top: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      width: 56,
-                      height: 56,
-                      borderRadius: '50%',
-                      border: '3px solid #1976d2',
-                      boxShadow: '0 0 32px 8px #90caf9',
-                      background: 'rgba(255,255,255,0.5)',
-                      zIndex: 20,
-                      pointerEvents: 'none',
-                    }}
-                  />
-                )}
-              <Popup>
-                <div>
-                  <strong>IP:</strong> {v.id.split('_').slice(0, 4).join('.')}
-                </div>
-              </Popup>
-              {/* Debug: mostra la posizione accanto al marker */}
-              <div
-                style={{
-                  position: 'absolute',
-                  left: '30px',
-                  top: '-10px',
-                  background: 'rgba(255,255,255,0.8)',
-                  padding: '2px 4px',
-                  borderRadius: '4px',
-                  fontSize: '12px',
-                  pointerEvents: 'none',
-                  transform: 'translate(-50%, -100%)',
-                    fontWeight: selectedVehicleId === v.id ? 700 : 400,
-                    color: selectedVehicleId === v.id ? '#1976d2' : '#333',
-                    border: selectedVehicleId === v.id ? '2px solid #1976d2' : 'none',
-                }}
-              >
-                {v.lat.toFixed(5)}, {v.lon.toFixed(5)}
-              </div>
-            </Marker>
-              {/* Linea verde e marker destinazione se vaia attivo */}
-              {vaiaTgt && (
-                <>
-                  <Polyline
-                    positions={[[v.lat, v.lon], [tgt.lat, tgt.lon]]}
-                    pathOptions={{ color: 'green', weight: 5, dashArray: '6 8', opacity: 0.9 }}
-                  />
-                  <Marker
-                    position={[tgt.lat, tgt.lon]}
-                    icon={L.divIcon({
-                      className: '',
-                      html: `<div style=\"display:inline-flex;align-items:center;justify-content:center;background:rgba(0,200,0,0.95);border-radius:999px;padding:6px 1em;font-size:15px;color:white;border:2.5px solid green;box-shadow:0 2px 12px rgba(0,0,0,0.15);font-weight:900;white-space:nowrap;box-sizing:border-box;\">Arrivo</div>`
-                    })}
-                    interactive={false}
-                  />
-                </>
-              )}
-            </React.Fragment>
-          );
-        })}
+        {vehicles.map((v) => (
+          <VehicleMarker
+            key={v.id}
+            v={v}
+            isSelected={selectedVehicleId === v.id}
+            vaiaActive={vaiaActive}
+            vaiaTarget={vaiaTarget}
+            handleMarkerClick={handleMarkerClick}
+            selectedVehicleId={selectedVehicleId}
+          />
+        ))}
       </MapContainer>
       {/* Toolbar dock infondo alla pagina */}
       <Box
@@ -770,10 +873,10 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions }: MapViewProps) => 
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
         }}>
-          <ClickAwayListener onClickAway={() => { if (gotoSuccess) { setGotoMode(false); setGotoTarget(null); } }}>
+          <ClickAwayListener onClickAway={() => { if (gotoSuccess) { console.log('[DEBUG GOTO] ClickAwayListener: chiudo pannello per successo'); setGotoMode(false); setGotoTarget(null); } else { console.log('[DEBUG GOTO] ClickAwayListener: ignorato (no successo)'); } }}>
             <div style={{ position: 'relative', width: '100%', height: '100%', padding: 0 }}>
               {/* X chiusura sempre cliccabile */}
-              <Button onClick={() => { setGotoMode(false); setGotoTarget(null); }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
+              <Button onClick={() => { console.log('[DEBUG GOTO] X: chiudo pannello manualmente'); setGotoMode(false); setGotoTarget(null); }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
                 <span style={{ fontSize: 22, fontWeight: 700, color: '#888' }}>×</span>
               </Button>
               <div style={{ padding: '32px 24px 24px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 180 }}>
