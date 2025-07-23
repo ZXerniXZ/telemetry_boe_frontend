@@ -8,6 +8,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import EditIcon from '@mui/icons-material/Edit';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import Button from '@mui/material/Button';
+import Tooltip from '@mui/material/Tooltip';
 import { MAP_STYLES } from '../config';
 import { getCentroid, haversine, parseIpPort } from '../utils';
 import RoomIcon from '@mui/icons-material/Room';
@@ -58,6 +59,7 @@ interface MapViewProps {
   initialBuoyCount?: number;
   assignmentLines?: { from: { lat: number; lon: number }, toIndex: number }[];
   confirmedField?: { campoBoe: { lat: number; lon: number }[]; giuria: { lat: number; lon: number } | null } | null;
+  windDirection?: number | ''; // direzione del vento in gradi
 }
 
 function RecenterOnChange({ center }: { center: [number, number] }) {
@@ -98,6 +100,122 @@ function useIsInMapBounds(lat: number, lon: number) {
     };
   }, [map, lat, lon]);
   return inBounds;
+}
+
+// Componente per le frecce del vento
+function WindArrows({ windDirection }: { windDirection: number | '' }) {
+  const map = useMap();
+  const [arrows, setArrows] = useState<React.ReactNode[]>([]);
+
+  // Funzione per generare le frecce
+  const generateArrows = useCallback(() => {
+    if (!map || windDirection === '' || typeof windDirection !== 'number') {
+      setArrows([]);
+      return;
+    }
+
+    const bounds = map.getBounds();
+    const arrowsList: React.ReactNode[] = [];
+    
+    // Numero fisso di frecce per riga e colonna (indipendentemente dallo zoom)
+    const arrowsPerRow = 8; // 8 frecce per riga
+    const arrowsPerCol = 6; // 6 frecce per colonna
+    
+    // Calcola la spaziatura basata sui bounds e sul numero fisso di frecce
+    const latSpacing = (bounds.getNorth() - bounds.getSouth()) / (arrowsPerCol - 1);
+    const lonSpacing = (bounds.getEast() - bounds.getWest()) / (arrowsPerRow - 1);
+    
+    // Genera una griglia fissa di frecce
+    for (let row = 0; row < arrowsPerCol; row++) {
+      for (let col = 0; col < arrowsPerRow; col++) {
+        const lat = bounds.getSouth() + (row * latSpacing);
+        const lon = bounds.getWest() + (col * lonSpacing);
+        
+        const arrowIcon = L.divIcon({
+          className: '',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+          html: `
+            <div style="
+              width: 24px; 
+              height: 24px; 
+              display: flex; 
+              align-items: center; 
+              justify-content: center;
+              opacity: 0.3;
+              transform: rotate(${windDirection}deg);
+              animation: windMove 8s linear infinite;
+            ">
+              <svg width="24" height="24" viewBox="0 0 24 24">
+                <path d="M12 22 L12 2 M12 22 L6 16 M12 22 L18 16" 
+                      stroke="white" 
+                      stroke-width="2.5" 
+                      fill="none" 
+                      stroke-linecap="round" 
+                      stroke-linejoin="round"
+                      filter="drop-shadow(0 0 2px rgba(255,255,255,0.8))"/>
+              </svg>
+            </div>
+            <style>
+              @keyframes windMove {
+                0% {
+                  transform: rotate(${windDirection}deg) translateX(0px) translateY(-100px);
+                  opacity: 0;
+                }
+                10% {
+                  transform: rotate(${windDirection}deg) translateX(0px) translateY(-80px);
+                  opacity: 0.3;
+                }
+                90% {
+                  transform: rotate(${windDirection}deg) translateX(0px) translateY(80px);
+                  opacity: 0.3;
+                }
+                100% {
+                  transform: rotate(${windDirection}deg) translateX(0px) translateY(100px);
+                  opacity: 0;
+                }
+              }
+            </style>
+          `
+        });
+
+        arrowsList.push(
+          <Marker
+            key={`wind-${row}-${col}`}
+            position={[lat, lon]}
+            icon={arrowIcon}
+            interactive={false}
+            zIndexOffset={-2000}
+          />
+        );
+      }
+    }
+
+    setArrows(arrowsList);
+  }, [map, windDirection]);
+
+  useEffect(() => {
+    if (!map) return;
+
+    // Genera le frecce iniziali
+    generateArrows();
+
+    // Aggiungi event listener per aggiornare le frecce quando la mappa si muove o zooma
+    const handleMapChange = () => {
+      generateArrows();
+    };
+
+    map.on('move', handleMapChange);
+    map.on('zoom', handleMapChange);
+
+    // Cleanup degli event listener
+    return () => {
+      map.off('move', handleMapChange);
+      map.off('zoom', handleMapChange);
+    };
+  }, [map, generateArrows]);
+
+  return <>{arrows}</>;
 }
 
 function SelectedHaloMarker({ lat, lon, icon }: { lat: number, lon: number, icon: any }) {
@@ -334,7 +452,7 @@ function isSameGiuria(a: { lat: number; lon: number } | null | undefined, b: { l
 }
 
 // Componente memoizzato per il campo da regata con boe draggabili
-function CampoRegataDraggable(props: { giuriaPos: { lat: number; lon: number }, mapRef: React.RefObject<L.Map | null>, onBuoyCountChange?: (count: number) => void, initialBuoyCount?: number, setCampoBoe?: (boe: { lat: number; lon: number }[]) => void }, ref: React.Ref<any>) {
+function CampoRegataDraggable(props: { giuriaPos: { lat: number; lon: number }, mapRef: React.RefObject<L.Map | null>, onBuoyCountChange?: (count: number) => void, initialBuoyCount?: number, setCampoBoe?: (boe: { lat: number; lon: number }[]) => void, windDirection?: number | '' }, ref: React.Ref<any>) {
   const { giuriaPos, mapRef, onBuoyCountChange, initialBuoyCount, setCampoBoe } = props;
   // Genera campo a bastone o nessuna boa se initialBuoyCount === 0
   const [campoBoe, setCampoBoeState] = React.useState<{ lat: number; lon: number }[]>(() => {
@@ -593,7 +711,7 @@ function CampoRegataDraggable(props: { giuriaPos: { lat: number; lon: number }, 
             iconSize: [44, 44],
             iconAnchor: [22, 36],
             html: `
-              <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
+              <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;transform:rotate(${props.windDirection ? props.windDirection : 0}deg);'>
                 <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
                 <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
               </svg>
@@ -661,6 +779,7 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
   const [gotoLoading, setGotoLoading] = useState(false);
   const [gotoError, setGotoError] = useState<string | null>(null);
   const [gotoSuccess, setGotoSuccess] = useState<string | null>(null);
+  const [gotoCheckingStatus, setGotoCheckingStatus] = useState(false);
 
   // Stato per ogni boa: vaia attivo e target
   const [vaiaActive, setVaiaActive] = useState<{[id: string]: boolean}>({});
@@ -817,6 +936,34 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
     props.setSelectedVehicleId(null);
   }
 
+  // Funzione per controllare lo stato del vai a attraverso l'endpoint isgoing
+  async function checkVaiaStatus(vehicleId: string): Promise<boolean> {
+    try {
+      const { ip, port } = parseIpPort(vehicleId);
+      console.log('[CHECK VAIA STATUS] Chiamando endpoint per:', ip, port);
+      
+      const res = await fetch(`http://localhost:8001/isgoing/${ip}/${port}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      console.log('[CHECK VAIA STATUS] Status response:', res.status);
+      
+      if (!res.ok) {
+        console.warn('[CHECK VAIA STATUS] Errore nel controllo stato vai a:', res.status);
+        return false;
+      }
+      
+      const data = await res.json();
+      console.log('[CHECK VAIA STATUS] Data response:', data);
+      console.log('[CHECK VAIA STATUS] Data.isgoing:', data.isgoing);
+      return data.isgoing === true;
+    } catch (error) {
+      console.error('[CHECK VAIA STATUS] Errore nella chiamata isgoing:', error);
+      return false;
+    }
+  }
+
   // Funzione per inviare comando vai a
   async function handleSendGoto() {
     if (!selectedVehicle || !gotoTarget) return;
@@ -852,10 +999,6 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
   // Funzione per inviare stop_vaia
   async function handleStopGoto() {
     if (!selectedVehicle) return;
-    setGotoMode(false);
-    setGotoTarget(null);
-    setGotoSuccess(null);
-    setGotoError(null);
     setGotoLoading(true);
     setGotoError(null);
     setGotoSuccess(null);
@@ -870,6 +1013,11 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
       if (!res.ok) throw new Error(data.detail || data.message || 'Errore stop');
       setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: false }));
       setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: null }));
+      // Reset degli stati del pannello dopo stop riuscito
+      setGotoMode(false);
+      setGotoTarget(null);
+      setGotoSuccess(null);
+      setGotoError(null);
     } catch (e: any) {
       setGotoError(e?.message || 'Errore stop');
     } finally {
@@ -919,6 +1067,43 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
     setManualSuccess(null);
     setManualError(null);
   }, [props.selectedVehicleId]);
+
+  // Controllo periodico dello stato del vai a per mantenere sincronizzazione
+  useEffect(() => {
+    if (!selectedVehicle) return;
+    
+    const checkStatus = async () => {
+      try {
+        console.log('[CONTROLLO PERIODICO] Controllo stato per:', selectedVehicle.id);
+        const isActive = await checkVaiaStatus(selectedVehicle.id);
+        console.log('[CONTROLLO PERIODICO] Nuovo stato:', isActive);
+        setVaiaActive(prev => {
+          const newState = { ...prev, [selectedVehicle.id]: isActive };
+          console.log('[CONTROLLO PERIODICO] Stato aggiornato:', newState);
+          return newState;
+        });
+      } catch (error) {
+        console.error('[CONTROLLO PERIODICO] Errore nel controllo periodico stato vai a:', error);
+      }
+    };
+    
+    // Controlla immediatamente
+    checkStatus();
+    
+    // Controlla ogni 5 secondi
+    const interval = setInterval(checkStatus, 5000);
+    
+    return () => clearInterval(interval);
+  }, [selectedVehicle?.id]);
+
+  // Log per tracciare quando il pannello vai a viene aperto/chiuso
+  useEffect(() => {
+    if (gotoMode) {
+      console.log('[PANNELLO STATO] Pannello aperto - gotoSuccess:', gotoSuccess, 'gotoTarget:', gotoTarget);
+    } else {
+      console.log('[PANNELLO STATO] Pannello chiuso');
+    }
+  }, [gotoMode, gotoSuccess, gotoTarget]);
 
   // useEffect per aggiungere handler di pan/zoom per chiudere il menu elimina e aggiornare center/zoom
   useEffect(() => {
@@ -1002,6 +1187,8 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
           attribution={selectedStyle.attribution}
           maxZoom={selectedStyle.maxZoom}
         />
+        {/* Frecce del vento */}
+        <WindArrows windDirection={props.windDirection || ''} />
         {/* Visualizza marker giuria e campo solo se la prop giuriaPos è presente */}
         {props.giuriaPos && (
           <>
@@ -1009,12 +1196,12 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
               className: '',
               iconSize: [44, 44],
               iconAnchor: [22, 36],
-              html: `
-                <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
-                  <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
-                  <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
-                </svg>
-              `,
+                                html: `
+                    <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;transform:rotate(${props.windDirection ? props.windDirection : 0}deg);'>
+                      <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                      <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                    </svg>
+                  `,
             })}>
               <Popup>Barca giuria</Popup>
             </Marker>
@@ -1037,11 +1224,12 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
               onBuoyCountChange={props.onBuoyCountChange}
               initialBuoyCount={props.initialBuoyCount}
               setCampoBoe={setCampoBoe}
+              windDirection={props.windDirection}
             />
           </>
         )}
         {/* Mostra campo confermato sulla mappa principale */}
-        {showConfirmedField && (
+        {showConfirmedField && props.confirmedField && (
           <>
             {/* Marker giuria blu */}
             {props.confirmedField.giuria && (
@@ -1052,7 +1240,7 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
                   iconSize: [44, 44],
                   iconAnchor: [22, 36],
                   html: `
-                    <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
+                    <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;transform:rotate(${props.windDirection ? props.windDirection : 0}deg);'>
                       <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
                       <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
                     </svg>
@@ -1152,23 +1340,66 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
           {editMode ? (
             <>
               {/* Tool Vai a */}
-              <Button
+              <Tooltip 
+                title={
+                  vaiaActive[selectedVehicle?.id || ''] 
+                    ? "Boa in navigazione - Clicca per fermare" 
+                    : "Vai a - Clicca per navigare verso un punto"
+                }
+                arrow
+              >
+                <span>
+                  <Button
                 variant={gotoMode ? 'contained' : 'text'}
                 color={gotoMode ? 'primary' : 'inherit'}
-                onClick={() => {
+                onClick={async () => {
+                  console.log('[VAI A CLICK] Inizio click handler');
                   if (!selectedVehicle) {
+                    console.log('[VAI A CLICK] Nessuna boa selezionata, mostra popup');
                     setSelectVehiclePopup(true);
                     return;
                   }
-                  if (vaiaActive[selectedVehicle.id]) {
-                    setGotoMode(true);
-                    setGotoTarget({ lat: 0, lon: 0 }); // dummy, per mostrare STOP
-                    setGotoSuccess('Comando inviato!');
-                  } else {
+                  
+                  console.log('[VAI A CLICK] Boa selezionata:', selectedVehicle.id);
+                  console.log('[VAI A CLICK] Stato locale vaiaActive:', vaiaActive[selectedVehicle.id]);
+                  
+                  setGotoCheckingStatus(true);
+                  try {
+                    // Controlla SEMPRE lo stato del vai a attraverso l'endpoint isgoing
+                    // indipendentemente dallo stato locale
+                    console.log('[VAI A CLICK] Chiamando endpoint isgoing...');
+                    const isVaiaActive = await checkVaiaStatus(selectedVehicle.id);
+                    console.log('[VAI A CLICK] Risposta endpoint isgoing:', isVaiaActive);
+                    
+                    // Aggiorna sempre lo stato locale con la risposta del server
+                    setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: isVaiaActive }));
+                    
+                    if (isVaiaActive) {
+                      console.log('[VAI A CLICK] Vai a attivo, mostro STOP');
+                      // Se la boa ha già un vai a attivo, mostra direttamente il pulsante STOP
+                      setGotoMode(true);
+                      setGotoTarget({ lat: 0, lon: 0 }); // dummy, per mostrare STOP
+                      setGotoSuccess('Comando inviato!');
+                      setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: null }));
+                    } else {
+                      console.log('[VAI A CLICK] Vai a non attivo, mostro selezione punto');
+                      // Se la boa non ha un vai a attivo, procedi con la sequenza classica
+                      setGotoMode(true);
+                      setGotoTarget(null);
+                      setGotoError(null);
+                      setGotoSuccess(null);
+                    }
+                  } catch (error) {
+                    console.error('[VAI A CLICK] Errore nel controllo stato vai a:', error);
+                    // In caso di errore, procedi con la sequenza classica
                     setGotoMode(true);
                     setGotoTarget(null);
                     setGotoError(null);
                     setGotoSuccess(null);
+                    setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: false }));
+                  } finally {
+                    setGotoCheckingStatus(false);
+                    console.log('[VAI A CLICK] Fine click handler');
                   }
                 }}
                 sx={{
@@ -1184,10 +1415,18 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
                   justifyContent: 'center',
                   filter: !selectedVehicle ? 'grayscale(1) brightness(1.2)' : undefined,
                 }}
-                disabled={!selectedVehicle}
+                disabled={!selectedVehicle || gotoCheckingStatus}
               >
-                <RoomIcon sx={{ color: gotoMode ? '#1565c0' : '#1976d2', fontSize: 28 }} />
+                <RoomIcon sx={{ 
+                  color: gotoCheckingStatus ? '#999' : (
+                    vaiaActive[selectedVehicle?.id || ''] ? '#d32f2f' : (gotoMode ? '#1565c0' : '#1976d2')
+                  ), 
+                  fontSize: 28,
+                  animation: gotoCheckingStatus ? 'spin 1s linear infinite' : 'none'
+                }} />
               </Button>
+                </span>
+              </Tooltip>
               {/* Tool Manual */}
               <Button
                 variant={manualMode ? 'contained' : 'text'}
@@ -1306,10 +1545,26 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
         }}>
-          <ClickAwayListener onClickAway={() => { if (gotoSuccess) { setGotoMode(false); setGotoTarget(null); } }}>
+          <ClickAwayListener onClickAway={() => { 
+            if (gotoSuccess) { 
+              console.log('[PANNELLO CHIUSURA] Chiusura tramite click away (gotoSuccess = true)');
+              setGotoMode(false); 
+              setGotoTarget(null); 
+              setGotoSuccess(null);
+              setGotoError(null);
+            } else {
+              console.log('[PANNELLO CHIUSURA] Click away ignorato (gotoSuccess = false/null)');
+            }
+          }}>
             <div style={{ position: 'relative', width: '100%', height: '100%', padding: 0 }}>
               {/* X chiusura sempre cliccabile */}
-              <Button onClick={() => { setGotoMode(false); setGotoTarget(null); }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
+              <Button onClick={() => { 
+                console.log('[PANNELLO CHIUSURA] Chiusura tramite X');
+                setGotoMode(false); 
+                setGotoTarget(null); 
+                setGotoSuccess(null);
+                setGotoError(null);
+              }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
                 <span style={{ fontSize: 22, fontWeight: 700, color: '#888' }}>×</span>
               </Button>
               <div style={{ padding: '32px 24px 24px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 180 }}>
@@ -1398,6 +1653,17 @@ const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
           </Button>
         </Box>
       )}
+      
+      {/* Stile CSS per animazione rotazione */}
+      <style>
+        {`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}
+      </style>
+      
       {/* Snackbar per errori/successi Vai a */}
       <Snackbar
         open={!!gotoError || !!gotoSuccess}

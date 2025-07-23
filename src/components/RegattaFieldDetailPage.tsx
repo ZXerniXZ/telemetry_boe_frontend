@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Box, Typography, Card, CardMedia, CardContent, Button, Paper, IconButton } from '@mui/material';
+import { Box, Typography, Card, CardMedia, CardContent, Button, Paper, IconButton, TextField } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
 import type { RegattaField } from './RegattaFieldsPage';
@@ -36,6 +36,9 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = original; };
   }, []);
+
+  // Stato per la direzione del vento
+  const [windDirection, setWindDirection] = useState<number | ''>('');
 
   // Calcola le boe disponibili (non assegnate)
   const assignedIds = Object.values(assignments).filter(Boolean).map(b => b!.id);
@@ -226,6 +229,7 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
                 giuriaPos={giuriaPosition}
                 onBuoyCountChange={setBuoyCount}
                 initialBuoyCount={field.id === 'custom' ? 0 : undefined}
+                windDirection={windDirection}
                 assignmentLines={(() => {
                   // Calcola le linee da ogni boa assegnata alla sua posizione target
                   if (field.id !== 'custom' || !giuriaPosition) return [];
@@ -259,7 +263,17 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
           </Box>
           {/* Colonna destra: slot drag & drop */}
           <Box sx={{ width: { xs: '28vw', sm: 260 }, minWidth: 120, maxWidth: 320, bgcolor: 'white', p: 2, boxShadow: 4, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 2, position: 'relative' }}>
-            <Typography variant="h6" sx={{ mb: 2, textAlign: 'center' }}>Slot assegnazione</Typography>
+            <Typography variant="h6" sx={{ mb: 2, textAlign: 'center' }}>Direzione vento</Typography>
+            <TextField
+              label="Direzione vento (gradi)"
+              type="number"
+              value={windDirection}
+              onChange={(e) => setWindDirection(e.target.value === '' ? '' : Number(e.target.value))}
+              inputProps={{ min: 0, max: 360, step: 1 }}
+              placeholder="0-360"
+              fullWidth
+              sx={{ mb: 2 }}
+            />
             {field.id === 'custom' ? (
               <>
                 {/* Pulsante aggiungi boa sopra la giuria */}
@@ -335,17 +349,7 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
                     </Paper>
                   );
                 })}
-                {/* Pulsante conferma campo */}
-                <Button
-                  variant="contained"
-                  color={allSlotsCompleted ? 'success' : 'inherit'}
-                  disabled={!allSlotsCompleted}
-                  sx={{ mt: 3, fontWeight: 700, fontSize: 18, borderRadius: 3, boxShadow: 2, opacity: allSlotsCompleted ? 1 : 0.6 }}
-                  onClick={() => setConfirmOpen(true)}
-                  fullWidth
-                >
-                  Conferma campo
-                </Button>
+
               </>
             ) : (
               // Default: all slots as before
@@ -423,6 +427,40 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
             )}
           </Box>
         </React.Fragment>
+      </Box>
+      {/* Pulsante conferma campo in centro basso */}
+      <Box sx={{ 
+        position: 'fixed', 
+        bottom: 24, 
+        left: '50%', 
+        transform: 'translateX(-50%)', 
+        zIndex: 1000,
+        display: 'flex',
+        justifyContent: 'center'
+      }}>
+        <Button
+          variant="contained"
+          color={allSlotsCompleted ? 'success' : 'inherit'}
+          disabled={!allSlotsCompleted}
+          sx={{ 
+            fontWeight: 700, 
+            fontSize: 18, 
+            borderRadius: 3, 
+            boxShadow: 4, 
+            opacity: allSlotsCompleted ? 1 : 0.6,
+            px: 4,
+            py: 1.5,
+            minWidth: 200,
+            background: allSlotsCompleted ? 'linear-gradient(135deg, #4caf50 0%, #2e7d32 100%)' : 'linear-gradient(135deg, #9e9e9e 0%, #757575 100%)',
+            '&:hover': allSlotsCompleted ? {
+              background: 'linear-gradient(135deg, #66bb6a 0%, #388e3c 100%)',
+              boxShadow: 6
+            } : {}
+          }}
+          onClick={() => setConfirmOpen(true)}
+        >
+          Conferma campo
+        </Button>
       </Box>
       {/* Dialog conferma campo */}
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} maxWidth="xs" fullWidth
