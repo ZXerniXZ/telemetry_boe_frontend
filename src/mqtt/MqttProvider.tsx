@@ -35,18 +35,14 @@ export const MqttProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clientRef.current = client;
     client.on('connect', () => {
       setConnected(true);
-      // console.log('MQTT connesso');
     });
     client.on('reconnect', () => {
       setConnected(false);
-      // console.warn('MQTT riconnessione...');
     });
     client.on('close', () => {
       setConnected(false);
-      // console.warn('MQTT disconnesso');
     });
     client.on('error', (err) => {
-      // console.error('MQTT errore:', err);
     });
     return () => {
       client.end(true);

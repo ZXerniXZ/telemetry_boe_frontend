@@ -1,6 +1,6 @@
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, memo, useImperativeHandle, forwardRef } from 'react';
 import { Box } from '@mui/material';
 import Switch from '@mui/material/Switch';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -8,8 +8,6 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import EditIcon from '@mui/icons-material/Edit';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import Button from '@mui/material/Button';
-import { useRef as useReactRef } from 'react';
-import * as React from 'react';
 import { MAP_STYLES } from '../config';
 import { getCentroid, haversine, parseIpPort } from '../utils';
 import RoomIcon from '@mui/icons-material/Room';
@@ -26,9 +24,10 @@ import GpsFixedRoundedIcon from '@mui/icons-material/GpsFixedRounded';
 import BarChartRoundedIcon from '@mui/icons-material/BarChartRounded';
 import CellTowerRoundedIcon from '@mui/icons-material/CellTowerRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
+import SportsScoreIcon from '@mui/icons-material/SportsScore'; // fallback se non usiamo l'immagine
 
 // Icona personalizzata per le boe, con rotazione dinamica
-function getRotatedIcon(heading: number, isOnline: boolean) {
+export function getRotatedIcon(heading: number, isOnline: boolean) {
   return L.divIcon({
     className: '',
     iconSize: [40, 40],
@@ -53,6 +52,12 @@ interface MapViewProps {
   actions?: React.ReactNode; // elementi opzionali da mostrare a sinistra del menu stile mappa
   selectedVehicleId: string | null;
   setSelectedVehicleId: (id: string | null) => void;
+  onOpenRegattaFields?: () => void;
+  giuriaPos?: { lat: number; lon: number } | null;
+  onBuoyCountChange?: (count: number) => void;
+  initialBuoyCount?: number;
+  assignmentLines?: { from: { lat: number; lon: number }, toIndex: number }[];
+  confirmedField?: { campoBoe: { lat: number; lon: number }[]; giuria: { lat: number; lon: number } | null } | null;
 }
 
 function RecenterOnChange({ center }: { center: [number, number] }) {
@@ -66,6 +71,12 @@ function RecenterOnChange({ center }: { center: [number, number] }) {
 }
 
 function MapClickHandler({ onMapClick }: { onMapClick: (e: L.LeafletMouseEvent) => void }) {
+  useMapEvent('click', onMapClick);
+  return null;
+}
+
+// Handler click per selezione posizione giuria
+function MapClickHandlerCampo({ onMapClick }: { onMapClick: (e: L.LeafletMouseEvent) => void }) {
   useMapEvent('click', onMapClick);
   return null;
 }
@@ -276,10 +287,359 @@ function VehicleMarker({
   );
 }
 
-const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, setSelectedVehicleId }: MapViewProps) => {
+// Funzione per calcolare il punto medio tra due coordinate lat/lon
+function midpoint(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
+  return {
+    lat: (a.lat + b.lat) / 2,
+    lon: (a.lon + b.lon) / 2,
+  };
+}
+
+// Funzione per generare l'icona numerata per una boa
+function getBoaIconWithNumber(num: number) {
+  return L.divIcon({
+    className: '',
+    iconSize: [36, 36],
+    iconAnchor: [18, 36],
+    html: `
+      <div style="position:relative;display:inline-block;width:36px;height:36px;">
+        <svg width='36' height='36' viewBox='0 0 36 36'>
+          <circle cx='18' cy='18' r='15' fill='#e53935' stroke='white' stroke-width='3'/>
+        </svg>
+        <div style="position:absolute;top:0;left:0;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:18px;color:white;text-shadow:0 1px 4px #b71c1c;">${num}</div>
+      </div>
+    `
+  });
+}
+
+// Funzione aggiornata per generare campo a bastone con 4 boe e barca giuria
+function generaCampoBastone(giuria: { lat: number; lon: number }) {
+  // Parametri per la disposizione (in gradi decimali, da adattare a scala reale)
+  const dx = 0.0005; // spostamento longitudinale (est-ovest)
+  const dy = 0.0006; // spostamento latitudinale (nord-sud)
+  // Barca giuria: in basso a destra (giuria.lat, giuria.lon)
+  // Boa 4 (partenza): in basso a sinistra
+  const boa4 = { lat: giuria.lat, lon: giuria.lon - 2 * dx };
+  // Gate centrale
+  const boa2 = { lat: giuria.lat - dy, lon: giuria.lon - dx }; // gate sinistra
+  const boa3 = { lat: giuria.lat - dy, lon: giuria.lon + dx }; // gate destra
+  // Boa 1 (bolina): in alto centro
+  const boa1 = { lat: giuria.lat - 2 * dy, lon: giuria.lon };
+  // Ordine: boa1 (bolina), boa2 (gate sx), boa3 (gate dx), boa4 (partenza)
+  return [boa1, boa2, boa3, boa4];
+}
+
+function isSameGiuria(a: { lat: number; lon: number } | null | undefined, b: { lat: number; lon: number } | null | undefined) {
+  return a && b && a.lat === b.lat && a.lon === b.lon;
+}
+
+// Componente memoizzato per il campo da regata con boe draggabili
+function CampoRegataDraggable(props: { giuriaPos: { lat: number; lon: number }, mapRef: React.RefObject<L.Map | null>, onBuoyCountChange?: (count: number) => void, initialBuoyCount?: number, setCampoBoe?: (boe: { lat: number; lon: number }[]) => void }, ref: React.Ref<any>) {
+  const { giuriaPos, mapRef, onBuoyCountChange, initialBuoyCount, setCampoBoe } = props;
+  // Genera campo a bastone o nessuna boa se initialBuoyCount === 0
+  const [campoBoe, setCampoBoeState] = React.useState<{ lat: number; lon: number }[]>(() => {
+    if (typeof initialBuoyCount === 'number') {
+      if (initialBuoyCount === 0) return [];
+      // Se >0, genera quel numero di boe (usando la logica bastone per le prime 4)
+      return generaCampoBastone(giuriaPos).slice(0, initialBuoyCount);
+    }
+    return generaCampoBastone(giuriaPos);
+  });
+  // Aggiorna il campo boe anche nel parent (MapView) per le linee
+  useEffect(() => {
+    if (setCampoBoe) setCampoBoe(campoBoe);
+  }, [campoBoe, setCampoBoe]);
+  const prevGiuriaRef = React.useRef<{ lat: number; lon: number } | null>(giuriaPos);
+
+  // Indici: 0=giuria, 1=boa1 (bolina), 2=boa2 (gate sx), 3=boa3 (gate dx), 4=boa4 (partenza)
+  // points: [giuria, boa1, boa2, boa3, boa4]
+  const [segments, setSegments] = React.useState<[number, number][]>([
+    [1, 2], // boa1 (bolina) - boa2 (gate sx)
+    [1, 3], // boa1 (bolina) - boa3 (gate dx)
+    [2, 3], // boa2 (gate sx) - boa3 (gate dx)
+    [2, 4], // boa2 (gate sx) - boa4 (partenza)
+    [3, 0], // boa3 (gate dx) - giuria
+    [4, 0]  // boa4 (partenza) - giuria
+  ]);
+  const [addLinePoints, setAddLinePoints] = React.useState<number[]>([]);
+  const [addLinePopupPos, setAddLinePopupPos] = React.useState<{x: number, y: number} | null>(null);
+  const [deleteLineIdx, setDeleteLineIdx] = React.useState<{iA: number, iB: number, pos: {x: number, y: number}}|null>(null);
+  const [boaActionPopup, setBoaActionPopup] = React.useState<{ idx: number, pos: { x: number, y: number } } | null>(null);
+
+  // Aggiorna boe e segmenti se cambia la posizione della giuria
+  React.useEffect(() => {
+    if (!isSameGiuria(giuriaPos, prevGiuriaRef.current)) {
+      setCampoBoeState(generaCampoBastone(giuriaPos));
+      prevGiuriaRef.current = giuriaPos;
+      setSegments([
+        [1, 2], [1, 3], [2, 3], [2, 4], [3, 0], [4, 0]
+      ]);
+    }
+  }, [giuriaPos]);
+
+  // Notifica il parent ogni volta che cambia il numero di boe
+  React.useEffect(() => {
+    if (onBuoyCountChange) onBuoyCountChange(campoBoe.length);
+  }, [campoBoe.length, onBuoyCountChange]);
+
+  // Lista dei punti: 0=giuria, 1=boa1 (bolina), 2=boa2 (gate sx), 3=boa3 (gate dx), 4=boa4 (partenza)
+  const points = [giuriaPos, ...campoBoe];
+
+  // Handler per click su marker per aggiunta linea
+  function handleMarkerClickAddLine(idx: number, e?: any) {
+    if (addLinePoints.length === 0) {
+      // Calcola posizione popup vicino al marker cliccato
+      if (e && e.target && e.target._map && e.latlng) {
+        const map = e.target._map;
+        const latlng = e.latlng;
+        const point = map.latLngToContainerPoint(latlng);
+        setAddLinePopupPos({ x: point.x, y: point.y });
+      } else {
+        setAddLinePopupPos(null);
+      }
+      setAddLinePoints([idx]);
+    } else if (addLinePoints.length === 1 && addLinePoints[0] !== idx) {
+      const newSeg: [number, number] = [addLinePoints[0], idx];
+      // Evita duplicati (in entrambi i versi)
+      const exists = segments.some(([a, b]) => (a === newSeg[0] && b === newSeg[1]) || (a === newSeg[1] && b === newSeg[0]));
+      if (!exists) setSegments([...segments, newSeg]);
+      setAddLinePoints([]);
+      setAddLinePopupPos(null);
+    }
+  }
+
+  // Handler per click su Polyline per eliminazione
+  function handleLineClick(iA: number, iB: number, e: any) {
+    if (e && e.originalEvent) {
+      const map = e.target._map;
+      if (map) {
+        const latlng = e.latlng;
+        const point = map.latLngToContainerPoint(latlng);
+        setDeleteLineIdx({iA, iB, pos: {x: point.x, y: point.y}});
+      }
+    }
+  }
+
+  // Handler per eliminare una linea
+  function handleDeleteSegment(idxA: number, idxB: number) {
+    setSegments(segments => segments.filter(([a, b]) => !(a === idxA && b === idxB) && !(a === idxB && b === idxA)));
+    setDeleteLineIdx(null);
+  }
+
+  // Handler per annullare eliminazione
+  function handleCancelDelete() {
+    setDeleteLineIdx(null);
+  }
+
+  // Handler per aggiungere una nuova boa
+  function handleAddBuoy() {
+    // Aggiunge una nuova boa vicino alla giuria (offset crescente)
+    const offset = 0.0003 + 0.0002 * campoBoe.length;
+    const angle = Math.PI / 2 + (campoBoe.length * Math.PI / 6); // distribuisce le nuove boe a ventaglio
+    const newBoa = {
+      lat: giuriaPos.lat + offset * Math.cos(angle),
+      lon: giuriaPos.lon + offset * Math.sin(angle) / Math.cos(giuriaPos.lat * Math.PI / 180),
+    };
+    setCampoBoeState(prev => [...prev, newBoa]);
+  }
+
+  // Handler per click su marker boa
+  function handleBoaMarkerClick(idx: number, e: any) {
+    if (idx === 0) return; // giuria esclusa
+    if (addLinePoints.length === 1) {
+      // Se già in modalità aggiunta linea, completa la linea
+      handleMarkerClickAddLine(idx, e);
+      return;
+    }
+    // Mostra popup azioni vicino alla boa
+    if (e && e.target && e.target._map && e.latlng) {
+      const map = e.target._map;
+      const latlng = e.latlng;
+      const point = map.latLngToContainerPoint(latlng);
+      setBoaActionPopup({ idx, pos: { x: point.x, y: point.y } });
+    }
+  }
+
+  // Handler per "Aggiungi linea" dal popup
+  function handleAddLineFromPopup() {
+    if (boaActionPopup) {
+      setAddLinePoints([boaActionPopup.idx]);
+      setAddLinePopupPos(boaActionPopup.pos);
+      setBoaActionPopup(null);
+    }
+  }
+
+  // Handler per eliminare una boa
+  function handleDeleteBuoy(idx: number) {
+    setCampoBoeState(prev => prev.filter((_, i) => i !== idx - 1));
+    // Aggiorna i segmenti rimuovendo quelli che coinvolgono la boa eliminata
+    setSegments(segs => segs.filter(([a, b]) => a !== idx && b !== idx));
+    setBoaActionPopup(null);
+  }
+
+  // Chiudi popup azioni boa, popup elimina linea e popup aggiungi linea su pan/zoom mappa
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const closeAllPopups = () => {
+      setBoaActionPopup(null);
+      setDeleteLineIdx(null);
+      setAddLinePoints([]);
+      setAddLinePopupPos(null);
+    };
+    map.on('movestart', closeAllPopups);
+    map.on('zoomstart', closeAllPopups);
+    return () => {
+      map.off('movestart', closeAllPopups);
+      map.off('zoomstart', closeAllPopups);
+    };
+  }, [mapRef]);
+
+  useImperativeHandle(ref, () => ({
+    addBuoy: handleAddBuoy,
+    getCampoBoe: () => campoBoe
+  }));
+
+  return (
+    <>
+      {/* Popup azioni boa */}
+      {boaActionPopup && (
+        <div style={{
+          position: 'absolute',
+          left: boaActionPopup.pos.x,
+          top: boaActionPopup.pos.y,
+          zIndex: 2100,
+          background: '#fff',
+          border: '2px solid #1976d2',
+          borderRadius: 8,
+          padding: '10px 18px',
+          boxShadow: '0 2px 12px #1976d233',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          minWidth: 120
+        }}>
+          <div style={{ fontWeight: 700, color: '#1976d2', marginBottom: 8 }}>{`Boa ${boaActionPopup.idx}`}</div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Button color="primary" variant="contained" size="small" onClick={handleAddLineFromPopup}>
+              Aggiungi linea
+            </Button>
+            <Button color="error" variant="contained" size="small" onClick={() => handleDeleteBuoy(boaActionPopup.idx)}>
+              Elimina boa
+            </Button>
+          </div>
+        </div>
+      )}
+      {/* Popup aggiunta linea vicino al marker selezionato */}
+      {addLinePoints.length === 1 && addLinePopupPos && (
+        <div style={{ position: 'absolute', left: addLinePopupPos.x, top: addLinePopupPos.y, zIndex: 2000, background: '#fffbe7', border: '1.5px solid #ffc107', borderRadius: 8, padding: '8px 18px', fontWeight: 600, color: '#b26a00', boxShadow: '0 2px 8px #ffc10733', minWidth: 180 }}>
+          Seleziona il secondo punto da collegare
+        </div>
+      )}
+      {/* Polyline e distanze solo per i segmenti definiti */}
+      {segments.map(([iA, iB], idx) => {
+        const p1 = points[iA];
+        const p2 = points[iB];
+        if (!p1 || !p2) return null;
+        const dist = haversine([p1.lat, p1.lon], [p2.lat, p2.lon]);
+        const mid = midpoint(p1, p2);
+        return (
+          <React.Fragment key={`segment-${iA}-${iB}`}>
+            {/* Polyline shadow trasparente per click facile */}
+            <Polyline
+              positions={[[p1.lat, p1.lon], [p2.lat, p2.lon]]}
+              pathOptions={{ color: 'red', weight: 18, opacity: 0, interactive: true }}
+              eventHandlers={{ click: (e) => handleLineClick(iA, iB, e) }}
+            />
+            {/* Polyline visiva */}
+            <Polyline
+              positions={[[p1.lat, p1.lon], [p2.lat, p2.lon]]}
+              pathOptions={{ color: 'red', weight: 4, dashArray: '6 8', opacity: 0.7 }}
+            />
+            <Marker
+              position={[mid.lat, mid.lon]}
+              icon={L.divIcon({
+                className: '',
+                html: `<div style=\"display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.95);border-radius:999px;padding:2px 0.8em;font-size:13px;color:red;border:2.5px solid red;box-shadow:0 2px 12px rgba(0,0,0,0.15);font-weight:900;white-space:nowrap;box-sizing:border-box;\">${dist.toFixed(1)} m</div>`
+              })}
+              interactive={false}
+            />
+          </React.Fragment>
+        );
+      })}
+      {/* Marker draggabili per le boe e la giuria */}
+      {points.map((p, i) => (
+        <Marker
+          key={i}
+          position={[p.lat, p.lon]}
+          draggable={i !== 0}
+          eventHandlers={{
+            dragend: (e) => {
+              const marker = e.target;
+              const { lat, lng } = marker.getLatLng();
+              if (i === 0) return; // giuria non draggabile qui
+              setCampoBoeState(prev => prev.map((boa, idx) => idx === i - 1 ? { lat, lon: lng } : boa));
+            },
+            click: (e) => {
+              if (i === 0) {
+                handleMarkerClickAddLine(i, e);
+              } else {
+                handleBoaMarkerClick(i, e);
+              }
+            }
+          }}
+          icon={i === 0 ? L.divIcon({
+            className: '',
+            iconSize: [44, 44],
+            iconAnchor: [22, 36],
+            html: `
+              <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
+                <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+              </svg>
+            `
+          }) : getBoaIconWithNumber(i)}
+        >
+          <Popup>{i === 0 ? 'Barca giuria' : `Boa ${i}`}</Popup>
+        </Marker>
+      ))}
+      {/* Popup elimina linea */}
+      {deleteLineIdx && (
+        <div style={{
+          position: 'absolute',
+          left: deleteLineIdx.pos.x,
+          top: deleteLineIdx.pos.y,
+          zIndex: 2000,
+          background: '#fff',
+          border: '2px solid #b71c1c',
+          borderRadius: 8,
+          padding: '10px 18px',
+          boxShadow: '0 2px 12px #b71c1c33',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          minWidth: 120
+        }}>
+          <div style={{ fontWeight: 700, color: '#b71c1c', marginBottom: 8 }}>Eliminare questa linea?</div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Button color="error" variant="contained" size="small" onClick={() => handleDeleteSegment(deleteLineIdx.iA, deleteLineIdx.iB)}>
+              Elimina
+            </Button>
+            <Button size="small" onClick={handleCancelDelete}>
+              Annulla
+            </Button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+const MemoCampoRegataDraggable = React.memo(forwardRef(CampoRegataDraggable));
+
+const MapView = forwardRef(function MapView(props: MapViewProps, ref) {
   // Centro della mappa: se c'è centerOn, altrimenti primo veicolo, altrimenti mondo
-  const defaultCenter: [number, number] = (vehicles.length > 0 ? [vehicles[0].lat, vehicles[0].lon] : [0, 0]);
-  const defaultZoom = typeof initialZoom === 'number' ? initialZoom : (vehicles.length > 0 ? 8 : 2);
+  const defaultCenter: [number, number] = (props.vehicles.length > 0 ? [props.vehicles[0].lat, props.vehicles[0].lon] : [0, 0]);
+  const defaultZoom = typeof props.initialZoom === 'number' ? props.initialZoom : (props.vehicles.length > 0 ? 8 : 2);
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
   const [mapZoom, setMapZoom] = useState<number>(defaultZoom);
   const [mapStyle, setMapStyle] = useState(MAP_STYLES[0].value);
@@ -316,11 +676,24 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
   // Stato per popup selezione boa
   const [selectVehiclePopup, setSelectVehiclePopup] = useState(false);
 
+  // Stato per le boe del campo (draggabili)
+  const [campoBoe, setCampoBoe] = useState<{ lat: number; lon: number }[]>([]);
+
+  // Rigenera il campo solo se la posizione della giuria cambia davvero
+  const prevGiuriaRef = useRef<{ lat: number; lon: number } | null>(null);
+  useEffect(() => {
+    if (props.giuriaPos && !isSameGiuria(props.giuriaPos, prevGiuriaRef.current)) {
+      setCampoBoe(generaCampoBastone(props.giuriaPos));
+      prevGiuriaRef.current = props.giuriaPos;
+    }
+    // Non azzerare mai campoBoe se giuriaPos resta la stessa!
+  }, [props.giuriaPos]);
+
   // Ref per accedere alla mappa leaflet
   const mapRef = useRef<L.Map | null>(null);
 
   // selectedVehicle globale per tutto il componente
-  const selectedVehicle = vehicles.find(v => v.id === selectedVehicleId) || null;
+  const selectedVehicle = props.vehicles.find(v => v.id === props.selectedVehicleId) || null;
 
   // useEffect per aggiungere handler click alla mappa
   useEffect(() => {
@@ -340,26 +713,12 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
   // Handler per il pulsante centra boe
   // Memoizza handleCenterBoe
   const handleCenterBoe = useCallback(() => {
-    if (mapRef.current && vehicles.length > 0) {
+    if (mapRef.current && props.vehicles.length > 0) {
       const map = mapRef.current;
-      const centroid = getCentroid(vehicles);
+      const centroid = getCentroid(props.vehicles);
       map.flyTo(centroid, map.getZoom());
     }
-  }, [vehicles]);
-
-  // DEBUG: log cambi di stato principali
-  useEffect(() => {
-    console.log('[DEBUG GOTO] gotoMode:', gotoMode);
-  }, [gotoMode]);
-  useEffect(() => {
-    console.log('[DEBUG GOTO] gotoTarget:', gotoTarget);
-  }, [gotoTarget]);
-  useEffect(() => {
-    console.log('[DEBUG GOTO] gotoSuccess:', gotoSuccess);
-  }, [gotoSuccess]);
-  useEffect(() => {
-    console.log('[DEBUG GOTO] gotoError:', gotoError);
-  }, [gotoError]);
+  }, [props.vehicles]);
 
   // Gestione click sulla mappa in modalità misura
   function handleMapClick(e: L.LeafletMouseEvent) {
@@ -438,27 +797,24 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
   function handleGotoMapClick(e: L.LeafletMouseEvent) {
     if (!gotoMode) return;
     if (!gotoSuccess) {
-      console.log('[DEBUG GOTO] handleGotoMapClick: selezionata posizione', e.latlng);
       setGotoTarget({ lat: e.latlng.lat, lon: e.latlng.lng });
     }
   }
 
   // Handler click marker boa
   function handleMarkerClick(vehicleId: string) {
-    console.log('[DEBUG GOTO] handleMarkerClick: selezionata boa', vehicleId);
-    setSelectedVehicleId(vehicleId);
+    props.setSelectedVehicleId(vehicleId);
   }
 
   // Handler click sulla mappa (fuori marker)
   function handleMapBackgroundClick(e: L.LeafletMouseEvent) {
     // Se in gotoMode, gestisci solo la selezione destinazione
     if (gotoMode) {
-      console.log('[DEBUG GOTO] handleMapBackgroundClick: click su mappa in gotoMode');
       handleGotoMapClick(e);
       // NON azzerare selectedVehicleId!
       return;
     }
-    setSelectedVehicleId(null);
+    props.setSelectedVehicleId(null);
   }
 
   // Funzione per inviare comando vai a
@@ -469,7 +825,6 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
     setGotoError(null);
     setGotoSuccess(null);
     const { ip, port } = parseIpPort(selectedVehicle.id);
-    console.log('[DEBUG GOTO] handleSendGoto: invio comando', { ip, port, gotoTarget });
     try {
       const res = await fetch('http://localhost:8001/vaia', {
         method: 'POST',
@@ -487,10 +842,8 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
       setGotoSuccess('Comando inviato!');
       setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: true }));
       setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: { lat: gotoTarget.lat, lon: gotoTarget.lon } }));
-      console.log('[DEBUG GOTO] handleSendGoto: successo');
     } catch (e: any) {
       setGotoError(e?.message || 'Errore invio comando');
-      console.log('[DEBUG GOTO] handleSendGoto: errore', e);
     } finally {
       setGotoLoading(false);
     }
@@ -507,7 +860,6 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
     setGotoError(null);
     setGotoSuccess(null);
     const { ip, port } = parseIpPort(selectedVehicle.id);
-    console.log('[DEBUG GOTO] handleStopGoto: invio stop', { ip, port });
     try {
       const res = await fetch('http://localhost:8001/stop_vaia', {
         method: 'POST',
@@ -518,10 +870,8 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
       if (!res.ok) throw new Error(data.detail || data.message || 'Errore stop');
       setVaiaActive(prev => ({ ...prev, [selectedVehicle.id]: false }));
       setVaiaTarget(prev => ({ ...prev, [selectedVehicle.id]: null }));
-      console.log('[DEBUG GOTO] handleStopGoto: successo');
     } catch (e: any) {
       setGotoError(e?.message || 'Errore stop');
-      console.log('[DEBUG GOTO] handleStopGoto: errore', e);
     } finally {
       setGotoLoading(false);
     }
@@ -556,12 +906,11 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
 
   // Quando cambio boa selezionata, resetta schermata Vai a se necessario
   useEffect(() => {
-    console.log('[DEBUG GOTO] useEffect: cambio selectedVehicleId', selectedVehicleId);
     setGotoMode(false);
     setGotoTarget(null);
     setGotoSuccess(null);
     setGotoError(null);
-  }, [selectedVehicleId]);
+  }, [props.selectedVehicleId]);
 
   // Quando cambio boa selezionata, resetta schermata Manual se necessario
   useEffect(() => {
@@ -569,7 +918,7 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
     setManualState('');
     setManualSuccess(null);
     setManualError(null);
-  }, [selectedVehicleId]);
+  }, [props.selectedVehicleId]);
 
   // useEffect per aggiungere handler di pan/zoom per chiudere il menu elimina e aggiornare center/zoom
   useEffect(() => {
@@ -610,45 +959,23 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
     }
   }, [measureMode]);
 
+  // Mostra campo confermato se presente (solo in pagina mappa principale)
+  const showConfirmedField = !!props.confirmedField && !props.giuriaPos;
+
   return (
     <Box
       sx={{ position: 'relative', width: '100%', height: '100%' }}
       className={measureMode ? 'measure-cursor' : ''}
     >
       {/* Switch modalità sovrapposto centrato in alto */}
-      <Box
-        sx={{
-          position: 'absolute',
-          top: 16,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 1200,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          bgcolor: 'background.paper',
-          borderRadius: 2,
-          boxShadow: 2,
-          px: 1.5,
-          py: 0.5,
-        }}
-      >
-        <VisibilityIcon fontSize="small" color={editMode ? 'disabled' : 'primary'} />
-        <Switch
-          checked={editMode}
-          onChange={(_, checked) => setEditMode(checked)}
-          color="primary"
-          size="small"
-        />
-        <EditIcon fontSize="small" color={editMode ? 'primary' : 'disabled'} />
-      </Box>
+      {/* RIMOSSO: la box assoluta in alto con lo switch */}
       {/* Barra in alto a destra con eventuali azioni e select stile mappa */}
       <Box sx={{ position: 'absolute', top: 16, right: 16, zIndex: 1200, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 2 }}>
         {/* Pulsante centra boe */}
         <button onClick={handleCenterBoe} style={{ fontSize: 14, padding: '2px 8px', borderRadius: 4, cursor: 'pointer' }}>
           Centra boe
         </button>
-        {actions}
+        {props.actions}
         <label htmlFor="map-style-select" style={{ fontSize: 14, marginRight: 8 }}>Stile mappa:</label>
         <select
           id="map-style-select"
@@ -675,6 +1002,78 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
           attribution={selectedStyle.attribution}
           maxZoom={selectedStyle.maxZoom}
         />
+        {/* Visualizza marker giuria e campo solo se la prop giuriaPos è presente */}
+        {props.giuriaPos && (
+          <>
+            <Marker position={[props.giuriaPos.lat, props.giuriaPos.lon]} icon={L.divIcon({
+              className: '',
+              iconSize: [44, 44],
+              iconAnchor: [22, 36],
+              html: `
+                <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
+                  <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                  <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                </svg>
+              `,
+            })}>
+              <Popup>Barca giuria</Popup>
+            </Marker>
+            {/* Linee assegnamento boe: da posizione attuale a target campo */}
+            {(props.assignmentLines || []).map((line, idx) => {
+              const to = campoBoe[line.toIndex];
+              if (!to) return null;
+              return (
+                <Polyline
+                  key={`assign-line-${idx}`}
+                  positions={[[line.from.lat, line.from.lon], [to.lat, to.lon]]}
+                  pathOptions={{ color: '#43a047', weight: 4, dashArray: '8 10', opacity: 0.85 }}
+                />
+              );
+            })}
+            <MemoCampoRegataDraggable
+              ref={ref}
+              giuriaPos={props.giuriaPos}
+              mapRef={mapRef}
+              onBuoyCountChange={props.onBuoyCountChange}
+              initialBuoyCount={props.initialBuoyCount}
+              setCampoBoe={setCampoBoe}
+            />
+          </>
+        )}
+        {/* Mostra campo confermato sulla mappa principale */}
+        {showConfirmedField && (
+          <>
+            {/* Marker giuria blu */}
+            {props.confirmedField.giuria && (
+              <Marker
+                position={[props.confirmedField.giuria.lat, props.confirmedField.giuria.lon]}
+                icon={L.divIcon({
+                  className: '',
+                  iconSize: [44, 44],
+                  iconAnchor: [22, 36],
+                  html: `
+                    <svg width='44' height='44' viewBox='0 0 44 44' style='display:block;'>
+                      <ellipse cx='22' cy='28' rx='10' ry='16' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                      <polygon points='22,6 28,28 16,28' fill='#1565c0' stroke='#0d47a1' stroke-width='2'/>
+                    </svg>
+                  `
+                })}
+              >
+                <Popup>Barca giuria (campo confermato)</Popup>
+              </Marker>
+            )}
+            {/* Marker boe rosse numerate */}
+            {props.confirmedField.campoBoe.map((b, i) => (
+              <Marker
+                key={`confirmed-boe-${i}`}
+                position={[b.lat, b.lon]}
+                icon={getBoaIconWithNumber(i + 1)}
+              >
+                <Popup>{`Boa ${i + 1} (campo confermato)`}</Popup>
+              </Marker>
+            ))}
+          </>
+        )}
         {/* Linee misura distanza multiple */}
         {measureLines.map(line => (
           <React.Fragment key={line.id}>
@@ -704,141 +1103,175 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
             />
           </React.Fragment>
         ))}
-        {vehicles.map((v) => (
+        {props.vehicles.map((v) => (
           <VehicleMarker
             key={v.id}
             v={v}
-            isSelected={selectedVehicleId === v.id}
+            isSelected={props.selectedVehicleId === v.id}
             vaiaActive={vaiaActive}
             vaiaTarget={vaiaTarget}
             handleMarkerClick={handleMarkerClick}
-            selectedVehicleId={selectedVehicleId}
+            selectedVehicleId={props.selectedVehicleId}
           />
         ))}
       </MapContainer>
-      {/* Toolbar dock infondo alla pagina */}
-      <Box
-        sx={{
-          position: 'absolute',
-          left: '50%',
-          bottom: 24,
-          transform: 'translateX(-50%)',
-          zIndex: 1200,
-          bgcolor: 'background.paper',
-          borderRadius: 4,
-          boxShadow: 4,
-          px: 3,
-          py: 1.5,
-          minWidth: 240,
-          minHeight: 56,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 3,
-        }}
-      >
-        {editMode ? (
-          <>
-            {/* Tool Vai a */}
-            <Button
-              variant={gotoMode ? 'contained' : 'text'}
-              color={gotoMode ? 'primary' : 'inherit'}
-              onClick={() => {
-                if (!selectedVehicle) {
-                  setSelectVehiclePopup(true);
-                  return;
-                }
-                if (vaiaActive[selectedVehicle.id]) {
-                  setGotoMode(true);
-                  setGotoTarget({ lat: 0, lon: 0 }); // dummy, per mostrare STOP
-                  setGotoSuccess('Comando inviato!');
-                } else {
-                  setGotoMode(true);
-                  setGotoTarget(null);
-                  setGotoError(null);
-                  setGotoSuccess(null);
-                }
-              }}
-              sx={{
-                minWidth: 0,
-                width: 44,
-                height: 44,
-                p: 0,
-                borderRadius: 2,
-                border: '1.5px solid #222',
-                boxShadow: !selectedVehicle ? '0 0 0 4px #bbb' : '0 2px 8px rgba(0,0,0,0.10)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                filter: !selectedVehicle ? 'grayscale(1) brightness(1.2)' : undefined,
-              }}
-              disabled={!selectedVehicle}
-            >
-              <RoomIcon sx={{ color: gotoMode ? '#1565c0' : '#1976d2', fontSize: 28 }} />
-            </Button>
-            {/* Tool Manual */}
-            <Button
-              variant={manualMode ? 'contained' : 'text'}
-              color={manualMode ? 'primary' : 'inherit'}
-              onClick={() => {
-                if (!selectedVehicle) {
-                  setSelectVehiclePopup(true);
-                  return;
-                }
-                setManualMode(true);
-                setManualState('');
-                setManualError(null);
-                setManualSuccess(null);
-              }}
-              sx={{
-                minWidth: 0,
-                width: 44,
-                height: 44,
-                p: 0,
-                borderRadius: 2,
-                border: '1.5px solid #222',
-                boxShadow: !selectedVehicle ? '0 0 0 4px #bbb' : '0 2px 8px rgba(0,0,0,0.10)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                filter: !selectedVehicle ? 'grayscale(1) brightness(1.2)' : undefined,
-              }}
-              disabled={!selectedVehicle}
-            >
-              <FiberManualRecordIcon sx={{ color: manualMode ? '#1565c0' : '#1976d2', fontSize: 28 }} />
-            </Button>
-          </>
-        ) : (
-          // Tool set VISUALIZZAZIONE (occhio)
-        <Button
-          variant={measureMode ? 'contained' : 'text'}
-          color={measureMode ? 'primary' : 'inherit'}
-          onClick={() => {
-            setMeasureMode(m => {
-              const next = !m;
-              if (next) {
-                setMeasurePoints([]);
-              }
-              return next;
-            });
+      {/* Toolbar dock infondo alla pagina: visibile solo se giuriaPos non è presente (cioè nella mappa principale) */}
+      {!props.giuriaPos && (
+        <Box
+          sx={{
+            position: 'absolute',
+            left: '50%',
+            bottom: 24,
+            transform: 'translateX(-50%)',
+            zIndex: 1200,
+            bgcolor: 'background.paper',
+            borderRadius: 4,
+            boxShadow: 4,
+            px: 3,
+            py: 1.5,
+            minWidth: 240,
+            minHeight: 56,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            gap: 4,
           }}
-            sx={{
-              minWidth: 0,
-              width: 44,
-              height: 44,
-              p: 0,
-              borderRadius: 2,
-              border: '1.5px solid #222',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
         >
-          <StraightenIcon color={measureMode ? 'inherit' : 'action'} />
-        </Button>
-        )}
-      </Box>
+          {/* Switch modalità in verticale a sinistra dei tool */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mr: 2 }}>
+            <VisibilityIcon fontSize="small" color={editMode ? 'disabled' : 'primary'} />
+            <Switch
+              checked={editMode}
+              onChange={(_, checked) => setEditMode(checked)}
+              color="primary"
+              size="small"
+              sx={{ mx: 0, my: 0.5 }}
+            />
+            <EditIcon fontSize="small" color={editMode ? 'primary' : 'disabled'} />
+          </Box>
+          {editMode ? (
+            <>
+              {/* Tool Vai a */}
+              <Button
+                variant={gotoMode ? 'contained' : 'text'}
+                color={gotoMode ? 'primary' : 'inherit'}
+                onClick={() => {
+                  if (!selectedVehicle) {
+                    setSelectVehiclePopup(true);
+                    return;
+                  }
+                  if (vaiaActive[selectedVehicle.id]) {
+                    setGotoMode(true);
+                    setGotoTarget({ lat: 0, lon: 0 }); // dummy, per mostrare STOP
+                    setGotoSuccess('Comando inviato!');
+                  } else {
+                    setGotoMode(true);
+                    setGotoTarget(null);
+                    setGotoError(null);
+                    setGotoSuccess(null);
+                  }
+                }}
+                sx={{
+                  minWidth: 0,
+                  width: 44,
+                  height: 44,
+                  p: 0,
+                  borderRadius: 2,
+                  border: '1.5px solid #222',
+                  boxShadow: !selectedVehicle ? '0 0 0 4px #bbb' : '0 2px 8px rgba(0,0,0,0.10)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  filter: !selectedVehicle ? 'grayscale(1) brightness(1.2)' : undefined,
+                }}
+                disabled={!selectedVehicle}
+              >
+                <RoomIcon sx={{ color: gotoMode ? '#1565c0' : '#1976d2', fontSize: 28 }} />
+              </Button>
+              {/* Tool Manual */}
+              <Button
+                variant={manualMode ? 'contained' : 'text'}
+                color={manualMode ? 'primary' : 'inherit'}
+                onClick={() => {
+                  if (!selectedVehicle) {
+                    setSelectVehiclePopup(true);
+                    return;
+                  }
+                  setManualMode(true);
+                  setManualState('');
+                  setManualError(null);
+                  setManualSuccess(null);
+                }}
+                sx={{
+                  minWidth: 0,
+                  width: 44,
+                  height: 44,
+                  p: 0,
+                  borderRadius: 2,
+                  border: '1.5px solid #222',
+                  boxShadow: !selectedVehicle ? '0 0 0 4px #bbb' : '0 2px 8px rgba(0,0,0,0.10)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  filter: !selectedVehicle ? 'grayscale(1) brightness(1.2)' : undefined,
+                }}
+                disabled={!selectedVehicle}
+              >
+                <FiberManualRecordIcon sx={{ color: manualMode ? '#1565c0' : '#1976d2', fontSize: 28 }} />
+              </Button>
+              {/* Tool Campo da regata */}
+              <Button
+                variant="text"
+                onClick={props.onOpenRegattaFields}
+                sx={{
+                  minWidth: 0,
+                  width: 44,
+                  height: 44,
+                  p: 0,
+                  borderRadius: 2,
+                  border: '1.5px solid #222',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: '#fff',
+                }}
+              >
+                <img src="/campi/campiIcona.png" alt="Campo da regata" style={{ width: 28, height: 28, objectFit: 'contain' }} />
+              </Button>
+            </>
+          ) : (
+            // Tool set VISUALIZZAZIONE (occhio)
+            <Button
+              variant={measureMode ? 'contained' : 'text'}
+              color={measureMode ? 'primary' : 'inherit'}
+              onClick={() => {
+                setMeasureMode(m => {
+                  const next = !m;
+                  if (next) {
+                    setMeasurePoints([]);
+                  }
+                  return next;
+                });
+              }}
+              sx={{
+                minWidth: 0,
+                width: 44,
+                height: 44,
+                p: 0,
+                borderRadius: 2,
+                border: '1.5px solid #222',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.10)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <StraightenIcon color={measureMode ? 'inherit' : 'action'} />
+            </Button>
+          )}
+        </Box>
+      )}
       {/* Snackbar per selezione boa obbligatoria */}
       <Snackbar
         open={selectVehiclePopup}
@@ -873,10 +1306,10 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
         }}>
-          <ClickAwayListener onClickAway={() => { if (gotoSuccess) { console.log('[DEBUG GOTO] ClickAwayListener: chiudo pannello per successo'); setGotoMode(false); setGotoTarget(null); } else { console.log('[DEBUG GOTO] ClickAwayListener: ignorato (no successo)'); } }}>
+          <ClickAwayListener onClickAway={() => { if (gotoSuccess) { setGotoMode(false); setGotoTarget(null); } }}>
             <div style={{ position: 'relative', width: '100%', height: '100%', padding: 0 }}>
               {/* X chiusura sempre cliccabile */}
-              <Button onClick={() => { console.log('[DEBUG GOTO] X: chiudo pannello manualmente'); setGotoMode(false); setGotoTarget(null); }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
+              <Button onClick={() => { setGotoMode(false); setGotoTarget(null); }} sx={{ position: 'absolute', top: 8, right: 8, minWidth: 0, p: 0.5, zIndex: 10 }}>
                 <span style={{ fontSize: 22, fontWeight: 700, color: '#888' }}>×</span>
               </Button>
               <div style={{ padding: '32px 24px 24px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 180 }}>
@@ -1068,6 +1501,7 @@ const MapView = ({ vehicles, centerOn, initialZoom, actions, selectedVehicleId, 
       </Snackbar>
     </Box>
   );
-};
+});
 
+export { MapView };
 export default MapView;

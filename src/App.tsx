@@ -8,7 +8,7 @@ import MenuIcon from '@mui/icons-material/Menu';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import MapIcon from '@mui/icons-material/Map';
 import BuoyIcon from '@mui/icons-material/Adjust';
-import L from 'leaflet';
+import L, { LeafletMouseEvent, Map as LeafletMap } from 'leaflet';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { vehicleIconOnline, vehicleIconOffline } from './config';
 import { parseIpPort } from './utils';
@@ -23,25 +23,12 @@ import SignalCellular2BarRoundedIcon from '@mui/icons-material/SignalCellular2Ba
 import SignalCellular3BarRoundedIcon from '@mui/icons-material/SignalCellular3BarRounded';
 import SignalCellular4BarRoundedIcon from '@mui/icons-material/SignalCellular4BarRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
+import RegattaFieldsPage, { type RegattaField } from './components/RegattaFieldsPage';
+import RegattaFieldDetailPage from './components/RegattaFieldDetailPage';
+import { MapContainer, TileLayer, Marker, useMapEvent } from 'react-leaflet';
+import { getRotatedIcon } from './components/MapView';
 
 const drawerWidth = 220;
-
-function TelemetryMap({ vehicles, selectedVehicleId, setSelectedVehicleId }: { vehicles: Vehicle[], selectedVehicleId: string | null, setSelectedVehicleId: (id: string | null) => void }) {
-  // Mostra la mappa solo se c'è almeno una boa connessa
-  if (vehicles.length === 0) {
-    return <div style={{textAlign: 'center', marginTop: 40, color: '#888'}}>In attesa di coordinate...</div>;
-  }
-  return (
-    <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
-      <MapView
-        vehicles={vehicles}
-        initialZoom={16}
-        selectedVehicleId={selectedVehicleId}
-        setSelectedVehicleId={setSelectedVehicleId}
-      />
-    </Box>
-  );
-}
 
 function BoePage({ vehicles, onSelect, scannedIps, onScan, scanning, onConnectBoa, connectingIps, connectError, onCloseError, autoRetry, setAutoRetry, disconnectedSince }: { vehicles: Vehicle[]; onSelect: (id: string) => void; scannedIps: string[]; onScan: () => void; scanning: boolean; onConnectBoa: (ip: string) => void; connectingIps: Set<string>; connectError: string | null; onCloseError: () => void; autoRetry: boolean; setAutoRetry: (v: boolean) => void; disconnectedSince: { [id: string]: number } }) {
   const [openConnected, setOpenConnected] = useState(true);
@@ -402,8 +389,9 @@ function BoaDetailPage({ vehicle, onBack, onRemove }: { vehicle: Vehicle; onBack
 function AppContent() {
   const { telemetry } = useTelemetry();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [page, setPage] = useState<'mappa' | 'boe' | 'boa-detail'>('mappa');
+  const [page, setPage] = useState<'mappa' | 'boe' | 'boa-detail' | 'campi' | 'campo-detail' | 'giuria-map'>('mappa');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [selectedField, setSelectedField] = useState<RegattaField | null>(null);
   const [scannedIps, setScannedIps] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connectingIps, setConnectingIps] = useState<Set<string>>(new Set());
@@ -433,10 +421,10 @@ function AppContent() {
         lat,
         lon,
         ...Object.fromEntries(Object.entries(types).map(([type, msg]) => [type, msg.data])),
-        isonline,
+        isonline: !!isonline,
       };
     })
-    .filter((v): v is Vehicle => Boolean(v) && typeof v === 'object' && 'id' in v && 'lat' in v && 'lon' in v && 'isonline' in v)
+    .filter((v): v is Vehicle => Boolean(v) && typeof v === 'object' && 'id' in v && 'lat' in v && 'lon' in v && typeof v.isonline === 'boolean')
     .filter(v => userBoas.includes(v.id)) as Vehicle[], [telemetry, userBoas]);
   // Memoizza connectedIps
   const connectedIps = useMemo(() => vehicles.map(v => v.id.split('_').slice(0, 4).join('.')), [vehicles]);
@@ -570,10 +558,15 @@ function AppContent() {
     scanWithAnimation();
   }, [scanWithAnimation]);
 
+  const [giuriaPosition, setGiuriaPosition] = useState<{ lat: number; lon: number } | null>(null);
+  const [assignments, setAssignments] = useState<{ [slotId: string]: Vehicle | null }>(() => ({ boa1: null, boa2: null, boa3: null, pin: null, giuria: null }));
+  // Stato per il campo confermato
+  const [confirmedField, setConfirmedField] = useState<{ campoBoe: { lat: number; lon: number }[]; giuria: { lat: number; lon: number } | null } | null>(null);
+
   return (
     <Box sx={{ height: '100vh', bgcolor: 'white' }}>
       <TopBar boaCount={onlineCount} onMenuClick={() => setMenuOpen((open) => !open)} selectedVehicle={selectedVehicle} />
-      <SideMenu open={menuOpen} onClose={() => setMenuOpen(false)} currentPage={page} setPage={p => { setPage(p as 'mappa' | 'boe'); setSelectedVehicleId(null); }} />
+      <SideMenu open={menuOpen} onClose={() => setMenuOpen(false)} currentPage={page} setPage={p => { setPage(p as any); setSelectedVehicleId(null); setSelectedField(null); }} />
       <Box
         sx={{
           pt: 8,
@@ -584,9 +577,41 @@ function AppContent() {
           marginLeft: menuOpen ? `${drawerWidth}px` : 0,
         }}
       >
-        {page === 'mappa' && <TelemetryMap vehicles={vehicles} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} />}
+        {page === 'mappa' && (
+          <MapView
+            vehicles={vehicles}
+            initialZoom={16}
+            selectedVehicleId={selectedVehicleId}
+            setSelectedVehicleId={setSelectedVehicleId}
+            onOpenRegattaFields={() => setPage('campi')}
+            confirmedField={confirmedField}
+          />
+        )}
         {page === 'boe' && <BoePage vehicles={vehicles} onSelect={id => { setSelectedVehicleId(id); setPage('boa-detail'); }} scannedIps={scannedIpsFiltered} onScan={handleScan} scanning={scanning} onConnectBoa={handleConnectBoa} connectingIps={connectingIps} connectError={connectError} onCloseError={handleCloseConnectError} autoRetry={autoRetry} setAutoRetry={setAutoRetry} disconnectedSince={disconnectedSince} />}
         {page === 'boa-detail' && selectedVehicle && <BoaDetailPage vehicle={selectedVehicle} onBack={() => setPage('boe')} onRemove={handleRemoveBoa} />}
+        {page === 'campi' && <RegattaFieldsPage onSelect={field => { setSelectedField(field); setPage('campo-detail'); }} />}
+        {page === 'campo-detail' && selectedField && (
+          <RegattaFieldDetailPage
+            field={selectedField}
+            onBack={() => setPage('campi')}
+            onlineBoats={vehicles.filter((v): v is Vehicle => Boolean(v) && typeof v === 'object' && v.isonline === true)}
+            onChooseGiuriaPosition={() => setPage('giuria-map')}
+            giuriaPosition={giuriaPosition}
+            assignments={assignments}
+            setAssignments={setAssignments}
+            setPage={setPage}
+            setConfirmedField={setConfirmedField}
+          />
+        )}
+        {page === 'giuria-map' && (
+          <Box sx={{ width: '100vw', height: '100vh', p: 0, m: 0, bgcolor: '#e3eafc', position: 'fixed', top: 0, left: 0, zIndex: 2000 }}>
+            <Button onClick={() => setPage('campo-detail')} variant="outlined" size="small" sx={{ position: 'absolute', top: 16, left: 16, zIndex: 10, fontWeight: 500, fontSize: 15, px: 1.5, py: 0.5, minWidth: 0, boxShadow: 1, background: 'white' }}>Indietro</Button>
+            <WorldMapWithBoats
+              vehicles={vehicles.filter((v): v is Vehicle => Boolean(v) && typeof v === 'object' && v.isonline === true)}
+              onSelectPosition={pos => { setGiuriaPosition(pos); setPage('campo-detail'); }}
+            />
+          </Box>
+        )}
       </Box>
     </Box>
   );
@@ -601,3 +626,125 @@ function App() {
 }
 
 export default App;
+
+// --- COMPONENTE WORLD MAP ---
+function WorldMapWithBoats({ vehicles, onSelectPosition }: { vehicles: Vehicle[], onSelectPosition: (pos: { lat: number, lon: number }) => void }) {
+  const [selectedPos, setSelectedPos] = React.useState<{ lat: number; lon: number } | null>(null);
+  const [manualMode, setManualMode] = React.useState(false);
+  const mapRef = React.useRef<LeafletMap | null>(null);
+
+  // Calcola centro boe
+  const center = vehicles.length > 0
+    ? [vehicles.reduce((sum, v) => sum + v.lat, 0) / vehicles.length, vehicles.reduce((sum, v) => sum + v.lon, 0) / vehicles.length]
+    : [45, 9];
+
+  // Componente per gestire click sulla mappa
+  function ManualSelectHandler() {
+    useMapEvent('click', (e: LeafletMouseEvent) => {
+      if (manualMode) {
+        setSelectedPos({ lat: e.latlng.lat, lon: e.latlng.lng });
+        setManualMode(false);
+      }
+    });
+    return null;
+  }
+
+  // Prendi posizione GPS attuale
+  function handleGps() {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          setSelectedPos({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        },
+        err => { alert('Impossibile ottenere la posizione GPS'); }
+      );
+    } else {
+      alert('Geolocalizzazione non supportata');
+    }
+  }
+
+  // Attiva selezione manuale
+  function handleManual() {
+    setManualMode(true);
+  }
+
+  // Pulsante continua (abilitato solo se selezionato)
+  function handleContinue() {
+    if (selectedPos) {
+      onSelectPosition(selectedPos);
+    }
+  }
+
+  return (
+    <Box sx={{ width: '100vw', height: '100vh', position: 'relative' }}>
+      <MapContainer
+        center={selectedPos ? [selectedPos.lat, selectedPos.lon] : (center as [number, number])}
+        zoom={14}
+        style={{ width: '100vw', height: '100vh', zIndex: 1 }}
+        scrollWheelZoom={true}
+        whenReady={map => (mapRef.current = map.target)}
+      >
+        <TileLayer
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution="&copy; OpenStreetMap contributors"
+        />
+        {manualMode && <ManualSelectHandler />}
+        {vehicles.map(v => {
+          let heading = 0;
+          if (v.GLOBAL_POSITION_INT && typeof v.GLOBAL_POSITION_INT.hdg === 'number') {
+            heading = Math.floor(v.GLOBAL_POSITION_INT.hdg / 100);
+          }
+          const isOnline = v.isonline === true;
+          return (
+            <Marker
+              key={v.id}
+              position={[v.lat, v.lon]}
+              icon={getRotatedIcon(heading, isOnline)}
+            />
+          );
+        })}
+        {selectedPos && (
+          <Marker
+            position={[selectedPos.lat, selectedPos.lon]}
+            icon={L.divIcon({
+              className: '',
+              iconSize: [44, 44],
+              iconAnchor: [22, 44],
+              popupAnchor: [0, -44],
+              html: `<div style='width:44px;height:44px;background:#1976d2;border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid #fff;box-shadow:0 2px 8px #1976d2;'><span style='color:white;font-weight:700;font-size:18px;'>G</span></div>`
+            })}
+          />
+        )}
+      </MapContainer>
+      {/* Toolbar pulsanti in basso, stile coerente con le altre toolbar */}
+      <Box
+        sx={{
+          position: 'absolute',
+          left: '50%',
+          bottom: 24,
+          transform: 'translateX(-50%)',
+          zIndex: 1200,
+          bgcolor: 'background.paper',
+          borderRadius: 4,
+          boxShadow: 4,
+          px: 3,
+          py: 1.5,
+          minWidth: 240,
+          minHeight: 56,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 3,
+        }}
+      >
+        <Button variant="contained" color="primary" onClick={handleGps}>Scegli posizione GPS attuale</Button>
+        <Button variant="contained" color={manualMode ? 'secondary' : 'primary'} onClick={handleManual} disabled={manualMode}>
+          Seleziona manualmente
+        </Button>
+        <Button variant="contained" color="success" onClick={handleContinue} disabled={!selectedPos}>
+          Continua
+        </Button>
+      </Box>
+    </Box>
+  );
+}
