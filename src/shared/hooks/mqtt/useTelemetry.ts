@@ -27,6 +27,7 @@ export function useTelemetry() {
       try {
         const deviceId = extractDeviceId(topic);
         const type = extractType(topic);
+        // RIMOSSO: console.log('[MQTT PAYLOAD]', ...)
         if (!deviceId || !type) return;
         let msg;
         try {

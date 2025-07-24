@@ -9,8 +9,8 @@ import EditIcon from '@mui/icons-material/Edit';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import Button from '@mui/material/Button';
 import Tooltip from '@mui/material/Tooltip';
-import { MAP_STYLES } from '../config';
-import { getCentroid, haversine, parseIpPort } from '../utils';
+import { MAP_STYLES } from '../../config';
+import { getCentroid, haversine, parseIpPort } from '../../utils';
 import RoomIcon from '@mui/icons-material/Room';
 import StopIcon from '@mui/icons-material/Stop';
 import Snackbar from '@mui/material/Snackbar';
@@ -38,13 +38,7 @@ export function getRotatedIcon(heading: number, isOnline: boolean) {
   });
 }
 
-export interface Vehicle {
-  id: string;
-  lat: number;
-  lon: number;
-  isonline?: boolean;
-  [key: string]: any; // altri dati associati
-}
+import type { Vehicle } from '../../shared/types';
 
 interface MapViewProps {
   vehicles: Vehicle[];

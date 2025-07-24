@@ -1,14 +1,8 @@
 import React from 'react';
 import { Box, Card, CardActionArea, CardContent, Typography, CardMedia } from '@mui/material';
+import type { RegattaField } from '../../shared/types';
 
-export interface RegattaField {
-  id: string;
-  name: string;
-  image: string;
-  description?: string;
-}
-
-const FIELDS: RegattaField[] = [
+export const FIELDS: RegattaField[] = [
   {
     id: 'bastone',
     name: 'Campo Bastone',

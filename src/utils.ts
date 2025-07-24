@@ -38,4 +38,14 @@ export function parseIpPort(id: string): { ip: string; port: number } {
     ip: idParts.slice(0, 4).join('.'),
     port: parseInt(idParts[4], 10),
   };
+}
+
+// Estrae i dati reali da un messaggio MQTT (gestisce struttura nested)
+export function extractMqttData(mqttMessage: any): any {
+  // Se il messaggio ha una struttura nested con data.data, estrai quello
+  if (mqttMessage?.data?.data && typeof mqttMessage.data.data === 'object') {
+    return mqttMessage.data.data;
+  }
+  // Altrimenti usa data direttamente
+  return mqttMessage?.data || mqttMessage;
 } 

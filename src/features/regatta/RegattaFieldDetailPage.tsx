@@ -2,12 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Box, Typography, Card, CardMedia, CardContent, Button, Paper, IconButton, TextField } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
-import type { RegattaField } from './RegattaFieldsPage';
-import MapView from './MapView';
-import type { Vehicle } from './MapView';
+import type { Vehicle, RegattaField } from '../../shared/types';
+import MapView from '../map/MapView';
 import { Dialog, DialogTitle, DialogContent, DialogActions, CircularProgress, IconButton as MuiIconButton } from '@mui/material';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
-import { parseIpPort } from '../utils';
+import { parseIpPort } from '../../utils';
 
 const DEFAULT_SLOTS = [
   { id: 'boa1', label: 'Boa 1' },
@@ -102,13 +101,13 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
 
   // Gestione hold per conferma
   async function sendVaiAForAllBoas() {
-    console.log('[CONFIRMA] Invio comandi vai a per tutte le boe...');
+
     if (!mapViewRef.current?.getCampoBoe) {
-      console.log('[CONFIRMA] mapViewRef.current.getCampoBoe non disponibile');
+      
       return;
     }
     const campoBoe = mapViewRef.current.getCampoBoe();
-    console.log('[CONFIRMA] campoBoe:', campoBoe);
+    
     const promises = [];
     for (let i = 0; i < buoyCount; i++) {
       const slotId = `custom_boa${i + 1}`;
@@ -117,7 +116,7 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
         const target = campoBoe[i];
         if (!target) continue;
         const { ip, port } = parseIpPort(assigned.id);
-        console.log(`[CONFIRMA] Invio fetch /vaia per ${assigned.id} verso`, target);
+
         promises.push(
           fetch('http://localhost:8001/vaia', {
             method: 'POST',
@@ -129,12 +128,12 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
       }
     }
     const results = await Promise.all(promises);
-    console.log('[CONFIRMA] Risultati fetch:', results);
+    
     return results;
   }
 
   function startHold() {
-    console.log('[CONFIRMA] startHold chiamato');
+    
     setHoldActive(true);
     setHoldProgress(0);
     let progress = 0;
@@ -146,7 +145,7 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
         setHoldProgress(100);
         // Conferma solo se il bottone è ancora attivo (premuto)
         if (holdActiveRef.current) {
-          console.log('[CONFIRMA] Hold completato, procedo con invio comandi e navigazione');
+  
           setHoldActive(false);
           setTimeout(() => setConfirmOpen(false), 500);
           // INVIO COMANDI VAI A E NAVIGAZIONE
@@ -155,7 +154,7 @@ export default function RegattaFieldDetailPage({ field, onBack, onlineBoats, onC
           if (mapViewRef.current?.getCampoBoe && setConfirmedField) {
             setConfirmedField({ campoBoe: mapViewRef.current.getCampoBoe(), giuria: giuriaPosition || null });
           }
-          console.log('[CONFIRMA] Navigo verso mappa');
+  
           setTimeout(() => setPage('mappa'), 600);
         }
       }
